@@ -4,7 +4,7 @@ module cea_shock
     use cea_param, only: dp, empty_dp, R=>gas_constant
     use cea_mixture, only: Mixture, MixtureThermo
     use cea_transport, only: TransportDB
-    use cea_equilibrium, only: EqSolution, EqSolver, EqPartials
+    use cea_equilibrium, only: EqSolution, EqSolver, EqPartials, compute_transport_properties
     use fb_findloc, only: findloc
     use fb_utils
     implicit none
@@ -97,12 +97,11 @@ contains
                                       insert=insert, smooth_truncation=smooth_truncation, &
                                       truncation_width=truncation_width)
         else
-            ! CEA2 uses default trace of 5e-9 for shock problems
+            ! Use a default trace of 5e-9 for shock problems.
             self%eq_solver = EqSolver(products, reactants, trace=5.d-9, ions=ions, all_transport=all_transport, &
                                       insert=insert, smooth_truncation=smooth_truncation, &
                                       truncation_width=truncation_width)
         end if
-
     end function
 
     subroutine ShockSolver_update_solution(self, soln, X1, X2, p21, t21, iter)
@@ -145,6 +144,230 @@ contains
 
     end subroutine
 
+    logical function ShockSolver_state_valid(soln, idx) result(valid)
+        type(ShockSolution), intent(in) :: soln
+        integer, intent(in) :: idx
+
+        valid = .false.
+        if (idx < 1 .or. idx > soln%num_pts) return
+
+        ! Continue with the last nonzero equilibrium state after
+        ! singular-recovery exits, and let the shock layer decide whether to
+        ! finalize or reject the state.
+        valid = soln%eq_soln(idx)%T > 0.0d0 .and. &
+                soln%eq_soln(idx)%n > 0.0d0
+    end function
+
+    subroutine ShockSolver_fail_state(soln, idx, message)
+        type(ShockSolution), intent(inout) :: soln
+        integer, intent(in) :: idx
+        character(*), intent(in) :: message
+
+        if (len_trim(message) > 0) call log_warning(trim(message))
+        call log_warning("Shock calculation stopped after the last valid point.")
+
+        soln%converged = .false.
+        soln%pressure(idx) = 0.0d0
+        soln%mach(idx) = 0.0d0
+        soln%u(idx) = 0.0d0
+        soln%v_sonic(idx) = 0.0d0
+        soln%eq_soln(idx)%T = 0.0d0
+        soln%eq_soln(idx)%n = 0.0d0
+        soln%eq_soln(idx)%converged = .false.
+        soln%eq_soln(idx)%density = 0.0d0
+        soln%eq_soln(idx)%enthalpy = 0.0d0
+        soln%eq_soln(idx)%energy = 0.0d0
+        soln%eq_soln(idx)%gibbs_energy = 0.0d0
+        soln%eq_soln(idx)%entropy = 0.0d0
+        soln%eq_soln(idx)%cp_fr = 0.0d0
+        soln%eq_soln(idx)%cp_eq = 0.0d0
+        soln%eq_soln(idx)%cp_eq_transport = 0.0d0
+        soln%eq_soln(idx)%cv_eq = 0.0d0
+        soln%eq_soln(idx)%gamma_s = 0.0d0
+        soln%eq_soln(idx)%viscosity = 0.0d0
+        soln%eq_soln(idx)%conductivity_fr = 0.0d0
+        soln%eq_soln(idx)%conductivity_eq = 0.0d0
+        soln%eq_soln(idx)%Pr_fr = 0.0d0
+        soln%eq_soln(idx)%Pr_eq = 0.0d0
+        soln%eq_partials(idx)%dlnV_dlnP = 0.0d0
+        soln%eq_partials(idx)%dlnV_dlnT = 0.0d0
+        soln%eq_partials(idx)%gamma_s = 0.0d0
+
+        select case (idx)
+            case (2)
+                soln%rho12 = 0.0d0
+                soln%p21 = 0.0d0
+                soln%t21 = 0.0d0
+                soln%M21 = 0.0d0
+                soln%v2 = 0.0d0
+                if (soln%num_pts >= 3) then
+                    soln%pressure(3) = 0.0d0
+                    soln%mach(3) = 0.0d0
+                    soln%u(3) = 0.0d0
+                    soln%v_sonic(3) = 0.0d0
+                    soln%eq_soln(3)%T = 0.0d0
+                    soln%eq_soln(3)%n = 0.0d0
+                    soln%eq_soln(3)%converged = .false.
+                    soln%eq_soln(3)%density = 0.0d0
+                    soln%eq_soln(3)%enthalpy = 0.0d0
+                    soln%eq_soln(3)%energy = 0.0d0
+                    soln%eq_soln(3)%gibbs_energy = 0.0d0
+                    soln%eq_soln(3)%entropy = 0.0d0
+                    soln%eq_soln(3)%cp_fr = 0.0d0
+                    soln%eq_soln(3)%cp_eq = 0.0d0
+                    soln%eq_soln(3)%cp_eq_transport = 0.0d0
+                    soln%eq_soln(3)%cv_eq = 0.0d0
+                    soln%eq_soln(3)%gamma_s = 0.0d0
+                    soln%eq_soln(3)%viscosity = 0.0d0
+                    soln%eq_soln(3)%conductivity_fr = 0.0d0
+                    soln%eq_soln(3)%conductivity_eq = 0.0d0
+                    soln%eq_soln(3)%Pr_fr = 0.0d0
+                    soln%eq_soln(3)%Pr_eq = 0.0d0
+                    soln%eq_partials(3)%dlnV_dlnP = 0.0d0
+                    soln%eq_partials(3)%dlnV_dlnT = 0.0d0
+                    soln%eq_partials(3)%gamma_s = 0.0d0
+                    soln%rho52 = 0.0d0
+                    soln%p52 = 0.0d0
+                    soln%t52 = 0.0d0
+                    soln%M52 = 0.0d0
+                    soln%u5_p_v2 = 0.0d0
+                end if
+            case (3)
+                soln%rho52 = 0.0d0
+                soln%p52 = 0.0d0
+                soln%t52 = 0.0d0
+                soln%M52 = 0.0d0
+                soln%u5_p_v2 = 0.0d0
+        end select
+    end subroutine
+
+    subroutine ShockSolver_update_transport(self, eq_soln, frozen_shock, update_basis)
+        class(ShockSolver), intent(in) :: self
+        type(EqSolution), intent(inout) :: eq_soln
+        logical, intent(in), optional :: frozen_shock
+        logical, intent(in), optional :: update_basis
+        logical :: do_update_basis
+        logical :: frozen_shock_
+
+        if (.not. self%eq_solver%transport) return
+
+        do_update_basis = .true.
+        if (present(update_basis)) do_update_basis = update_basis
+
+        frozen_shock_ = .false.
+        if (present(frozen_shock)) frozen_shock_ = frozen_shock
+
+        if (frozen_shock_) then
+            call compute_transport_properties(self%eq_solver, eq_soln, frozen_shock=.true.)
+        else
+            if (do_update_basis) then
+                call self%eq_solver%update_transport_basis(eq_soln)
+            end if
+            call compute_transport_properties(self%eq_solver, eq_soln)
+        end if
+    end subroutine
+
+    subroutine ShockSolver_apply_atomic_transport_basis(self, eq_soln)
+        ! Force transport basis rows to elemental gas species.
+        class(ShockSolver), intent(in) :: self
+        type(EqSolution), intent(inout) :: eq_soln
+
+        integer :: ne, nn, ng
+        integer :: i, lc, fallback
+        real(dp), parameter :: tol = 1.0d-8
+
+        ng = self%eq_solver%num_gas
+        ne = self%eq_solver%num_active_elements()
+        nn = ne
+        if (self%eq_solver%ions .and. self%eq_solver%active_ions) nn = max(1, ne-1)
+        if (nn <= 0 .or. ng <= 0) return
+
+        eq_soln%transport_basis_rows = nn
+        eq_soln%transport_component_idx = 0
+        eq_soln%transport_basis_matrix = 0.0d0
+
+        do lc = 1, nn
+            fallback = 0
+            do i = 1, ng
+                if (self%eq_solver%products%stoich_matrix(i, lc) > tol .and. fallback == 0) fallback = i
+                if (abs(self%eq_solver%products%stoich_matrix(i, lc) - 1.0d0) < tol .and. &
+                    abs(sum(abs(self%eq_solver%products%stoich_matrix(i, :ne))) - 1.0d0) < tol) then
+                    eq_soln%transport_component_idx(lc) = i
+                    exit
+                end if
+            end do
+            if (eq_soln%transport_component_idx(lc) == 0) eq_soln%transport_component_idx(lc) = fallback
+            eq_soln%transport_basis_matrix(lc, :ng) = self%eq_solver%products%stoich_matrix(:ng, lc)
+        end do
+    end subroutine
+
+    subroutine ShockSolver_finalize_equilibrium_state(self, soln, idx, update_transport)
+        class(ShockSolver), intent(in) :: self
+        type(ShockSolution), intent(inout) :: soln
+        integer, intent(in) :: idx
+        logical, intent(in), optional :: update_transport
+        logical :: update_transport_
+
+        if (.not. ShockSolver_state_valid(soln, idx)) return
+
+        update_transport_ = .true.
+        if (present(update_transport)) update_transport_ = update_transport
+
+        soln%eq_partials(idx) = EqPartials(self%eq_solver%num_elements, count(soln%eq_soln(idx)%is_active))
+        call soln%eq_partials(idx)%compute_partials(self%eq_solver, soln%eq_soln(idx))
+        if (self%eq_solver%transport .and. update_transport_) call ShockSolver_update_transport(self, soln%eq_soln(idx))
+        call self%eq_solver%post_process(soln%eq_soln(idx), .true.)
+    end subroutine
+
+    subroutine ShockSolver_finalize_reflected_frozen_state(self, soln, idx)
+        class(ShockSolver), intent(in) :: self
+        type(ShockSolution), intent(inout) :: soln
+        integer, intent(in) :: idx
+
+        integer :: i, ng
+        real(dp) :: pressure, cp_dimless, wmx, pmn
+        real(dp) :: entropy_sum
+
+        if (.not. ShockSolver_state_valid(soln, idx)) return
+
+        ng = self%eq_solver%num_gas
+        pressure = soln%pressure(idx)
+        wmx = soln%eq_soln(2)%M
+
+        soln%eq_soln(idx)%mole_fractions = soln%eq_soln(idx)%nj / sum(soln%eq_soln(idx)%nj)
+        soln%eq_soln(idx)%mass_fractions = soln%eq_soln(idx)%nj * self%eq_solver%products%species%molecular_weight / &
+            sum(soln%eq_soln(idx)%nj * self%eq_solver%products%species%molecular_weight)
+
+        soln%eq_soln(idx)%pressure = pressure
+        soln%eq_soln(idx)%volume = soln%eq_soln(idx)%calc_volume()
+        soln%eq_soln(idx)%density = 1.0d0/soln%eq_soln(idx)%volume
+
+        soln%eq_soln(idx)%enthalpy = dot_product(soln%eq_soln(idx)%nj(:ng), soln%eq_soln(idx)%thermo%enthalpy(:ng)) * &
+                                     R * soln%eq_soln(idx)%T / 1.d3
+        soln%eq_soln(idx)%energy = soln%eq_soln(idx)%enthalpy - soln%eq_soln(idx)%n*soln%eq_soln(idx)%T*R/1.d3
+
+        entropy_sum = 0.0d0
+        do i = 1, size(soln%eq_soln(idx)%nj)
+            if (soln%eq_soln(idx)%nj(i) <= 0.0d0) cycle
+            pmn = pressure*wmx*soln%eq_soln(idx)%nj(i)
+            entropy_sum = entropy_sum + soln%eq_soln(idx)%nj(i)*(soln%eq_soln(idx)%thermo%entropy(i) - log(pmn))
+        end do
+        soln%eq_soln(idx)%entropy = entropy_sum * R / 1.d3
+        soln%eq_soln(idx)%gibbs_energy = soln%eq_soln(idx)%enthalpy - soln%eq_soln(idx)%T*soln%eq_soln(idx)%entropy
+
+        ! For reflected-frozen header thermo, use the carried incident-state
+        ! frozen-gas Cp basis with incident molecular weight.
+        cp_dimless = dot_product(soln%eq_soln(2)%nj(:ng), soln%eq_soln(2)%thermo%cp(:ng))
+        soln%eq_soln(idx)%cp_eq = cp_dimless * R / 1.d3
+        soln%eq_soln(idx)%cv_eq = soln%eq_soln(idx)%cp_eq - soln%eq_soln(idx)%n*R/1.d3
+        soln%eq_partials(idx)%gamma_s = cp_dimless/(cp_dimless - 1.0d0/wmx)
+        soln%eq_soln(idx)%gamma_s = soln%eq_partials(idx)%gamma_s
+        soln%v_sonic(idx) = sqrt(R*soln%eq_soln(idx)%T*soln%eq_soln(idx)%gamma_s/wmx)
+
+        soln%eq_soln(idx)%M = wmx
+        soln%eq_soln(idx)%MW = wmx*(1.0d0 - sum(soln%eq_soln(idx)%mole_fractions(ng+1:)))
+    end subroutine
+
     subroutine ShockSolver_solve_incident(self, soln, weights, T0, P0)
         ! Solve the incident shock conditions
 
@@ -173,11 +396,16 @@ contains
         real(dp), allocatable :: nj_g(:)  ! Total/gas species concentrations [kmol-per-kg]
         integer, parameter :: max_iter = 60
         real(dp), parameter :: T_gas_max = 20000.d0  ! Max gas temperature in the thermo database [K]
+        type(EqSolution) :: last_valid_eq
+        type(EqPartials) :: last_valid_partials
+        real(dp) :: last_rho12, last_p21, last_t21, last_T2, last_wm_k
+        logical :: have_last_valid
 
         ! Initialize
         idx = 2
         G = 0.d0
         soln%converged = .false.
+        have_last_valid = .false.
         u1 = soln%u(1)
         mach1 = soln%mach(1)
         ! Seed incident-equilibrium solve from the unshocked reactant composition
@@ -198,6 +426,11 @@ contains
 
         soln%pressure(idx) = p21*P0
         call self%eq_solver%solve(soln%eq_soln(idx), "hp", h0, soln%pressure(idx), weights, partials=soln%eq_partials(idx))
+        if (.not. ShockSolver_state_valid(soln, idx)) then
+            call ShockSolver_fail_state(soln, idx, &
+                                        "ShockSolver_solve_incident: incident equilibrium initialization failed.")
+            return
+        end if
 
         t21 = soln%eq_soln(idx)%T/T0
         ttmax = 1.05*T_gas_max/T0
@@ -209,6 +442,25 @@ contains
             T2 = t21*T0
 
             call self%eq_solver%solve(soln%eq_soln(idx), "tp", T2, soln%pressure(idx), weights, partials=soln%eq_partials(idx))
+            if (.not. ShockSolver_state_valid(soln, idx)) then
+                if (have_last_valid) then
+                    soln%eq_soln(idx) = last_valid_eq
+                    soln%eq_partials(idx) = last_valid_partials
+                    rho12 = last_rho12
+                    p21 = last_p21
+                    t21 = last_t21
+                    T2 = last_T2
+                    wm_k = last_wm_k
+                    exit
+                else
+                    call ShockSolver_fail_state(soln, idx, &
+                                                "ShockSolver_solve_incident: incident equilibrium iteration failed.")
+                    return
+                end if
+            end if
+            if (.not. soln%eq_soln(idx)%converged) then
+                call ShockSolver_finalize_equilibrium_state(self, soln, idx, update_transport=.false.)
+            end if
 
             ! Update properties after the equilibrium shock
             wm_k = 1.0d0/soln%eq_soln(idx)%n
@@ -219,6 +471,14 @@ contains
             dlnV_dlnT = soln%eq_partials(idx)%dlnV_dlnT
 
             rho12 = wm*t21/(p21*wm_k)
+            last_valid_eq = soln%eq_soln(idx)
+            last_valid_partials = soln%eq_partials(idx)
+            last_rho12 = rho12
+            last_p21 = p21
+            last_t21 = t21
+            last_T2 = T2
+            last_wm_k = wm_k
+            have_last_valid = .true.
 
             tmp = rho12*mu12rt
 
@@ -244,10 +504,8 @@ contains
             call self%update_solution(soln, X(1), X(2), p21, t21, i)
 
             if (i == 1 .and. .not. soln%converged .and. t21 >= ttmax) then
-                call log_warning("ShockSolver_solve_incident: first-iteration update hit " // &
-                                 "temperature cap; marking incident point as failed.")
-                soln%eq_soln(idx)%T = 0.0d0
-                soln%pressure(idx) = 0.0d0
+                call ShockSolver_fail_state(soln, idx, "ShockSolver_solve_incident: first-iteration update hit " // &
+                                            "temperature cap; marking incident point as failed.")
                 return
             end if
 
@@ -266,16 +524,30 @@ contains
 
         end do
 
-        ! Not converged; compute shock properties
+        ! For non-converged incident-equilibrium states, recompute transport
+        ! using elemental component rows, even if shock-level variables converge.
+        if (ShockSolver_state_valid(soln, idx)) then
+            if (self%eq_solver%transport .and. .not. soln%eq_soln(idx)%converged) then
+                call ShockSolver_apply_atomic_transport_basis(self, soln%eq_soln(idx))
+                call ShockSolver_update_transport(self, soln%eq_soln(idx), update_basis=.false.)
+            end if
+        end if
+
+        ! Keep the last valid incident-equilibrium state after
+        ! singular-recovery exits and continue with warning semantics.
         if (.not. soln%converged) then
-            soln%rho12 = rho12
-            soln%p21 = p21
-            soln%t21 = t21
-            soln%u(idx) = u1*rho12
-            soln%M21 = wm_k/wm
-            soln%mach(idx) = soln%M21*mach1
-            soln%v_sonic(idx) = (R*T2*(cp/(cp - 1.0/wm_k))/wm_k)**0.5d0
-            soln%v2 = u1 - soln%u(idx)
+            if (ShockSolver_state_valid(soln, idx)) then
+                soln%rho12 = rho12
+                soln%p21 = p21
+                soln%t21 = t21
+                soln%u(idx) = u1*rho12
+                soln%M21 = wm_k/wm
+                soln%mach(idx) = soln%M21*mach1
+                soln%v2 = u1 - soln%u(idx)
+                soln%v_sonic(idx) = (R*T2*soln%eq_soln(idx)%gamma_s/wm_k)**0.5d0
+            else
+                call ShockSolver_fail_state(soln, idx, "ShockSolver_solve_incident: incident equilibrium solve did not converge.")
+            end if
         end if
 
     end subroutine
@@ -294,7 +566,7 @@ contains
         integer :: idx  ! Solution index for the incident conditions
         real(dp) :: mach1, u1             ! Incident Mach and velocity
         integer :: i, j                   ! Loop index
-        real(dp) :: gamma1                ! Ratio of specific heats at initial condition
+        real(dp) :: gamma1, gamma2        ! Ratio of specific heats at initial/shocked conditions
         real(dp) :: cp                    ! Mixture heat capacity
         real(dp) :: wm, wm_k              ! Mixture molecular weight (initial, k-th iteration)
         real(dp) :: h_init, h0            ! Mixture enthalpy (initial, <all other points>)
@@ -321,6 +593,7 @@ contains
         ! Set the reactant weights as the species amount
         soln%eq_soln(idx)%converged = .true.
         soln%eq_soln(idx)%nj(:) = 0.0d0
+        soln%eq_soln(idx)%ln_nj(:) = self%eq_solver%log_min
         do i = 1, self%eq_solver%num_reactants
             j = findloc(self%eq_solver%products%species_names, self%eq_solver%reactants%species_names(i), 1)
             if (j > 0) then
@@ -394,16 +667,16 @@ contains
             call self%update_solution(soln, X(1), X(2), p21, t21, i)
 
             if (i == 1 .and. .not. soln%converged .and. t21 >= ttmax) then
-                call log_warning("ShockSolver_solve_incident_frozen: first-iteration update hit " // &
-                                 "temperature cap; marking incident point as failed.")
-                soln%eq_soln(idx)%T = 0.0d0
-                soln%pressure(idx) = 0.0d0
+                call ShockSolver_fail_state(soln, idx, "ShockSolver_solve_incident_frozen: first-iteration update hit " // &
+                                            "temperature cap; marking incident point as failed.")
                 return
             end if
 
             ! Convergence check
             if (soln%converged) then
                 call self%eq_solver%products%calc_thermo(soln%eq_soln(idx)%thermo, soln%eq_soln(idx)%T, condensed=.false.)
+                call ShockSolver_update_transport(self, soln%eq_soln(idx), frozen_shock=.true.)
+                gamma2 = cp/(cp - 1.0d0/wm_k)
                 soln%rho12 = rho12
                 soln%p21 = p21
                 soln%t21 = t21
@@ -411,7 +684,9 @@ contains
                 soln%M21 = wm_k/wm
                 soln%mach(idx) = soln%M21*mach1
                 soln%v2 = u1 - soln%u(idx)
-                soln%v_sonic(idx) = (R*T2*(cp/(cp - 1.0/wm_k))/wm_k)**0.5d0
+                soln%eq_partials(idx)%gamma_s = gamma2
+                soln%eq_soln(idx)%gamma_s = gamma2
+                soln%v_sonic(idx) = (R*T2*gamma2/wm_k)**0.5d0
                 exit
             end if
 
@@ -419,14 +694,7 @@ contains
 
         ! Not converged; compute shock properties
         if (.not. soln%converged) then
-            soln%rho12 = rho12
-            soln%p21 = p21
-            soln%t21 = t21
-            soln%u(idx) = u1*rho12
-            soln%M21 = wm_k/wm
-            soln%mach(idx) = soln%M21*mach1
-            soln%v_sonic(idx) = (R*T2*(cp/(cp - 1.0/wm_k))/wm_k)**0.5d0
-            soln%v2 = u1 - soln%u(idx)
+            call ShockSolver_fail_state(soln, idx, "ShockSolver_solve_incident_frozen: incident frozen solve did not converge.")
         end if
 
     end subroutine
@@ -456,7 +724,7 @@ contains
         real(dp) :: G(2, 3)               ! Solution matrix
         real(dp) :: X(3)                  ! Solution vector
         real(dp) :: dlnV_dlnP, dlnV_dlnT  ! Partial derivatives
-        real(dp) :: rho12                 ! Ratios of chemical potential and density across the incident shock
+        real(dp) :: rho12                 ! Incident-shock density ratio carried into reflected solve
         real(dp) :: mu25rt, rho52         ! Ratios of chemical potential and density across the reflected shock
         real(dp) :: tmp                   ! Intermediate variabls
         real(dp), allocatable :: nj_g(:)  ! Total/gas species concentrations [kmol-per-kg]
@@ -492,12 +760,17 @@ contains
             T5 = t52*T2
 
             call self%eq_solver%solve(soln%eq_soln(idx), "tp", T5, soln%pressure(idx), weights, partials=soln%eq_partials(idx))
+            if ((.not. ShockSolver_state_valid(soln, idx)) .or. (.not. soln%eq_soln(idx)%converged)) then
+                call ShockSolver_fail_state(soln, idx, &
+                                            "ShockSolver_solve_reflected: reflected equilibrium iteration failed.")
+                return
+            end if
 
             ! Update properties after the equilibrium shock
             wm_k = 1.0d0/soln%eq_soln(idx)%n
             nj_g = soln%eq_soln(idx)%nj(1:self%eq_solver%num_gas)
             cp = soln%eq_soln(idx)%cp_eq/(R*1.d-3)
-            call self%eq_solver%products%calc_thermo(soln%eq_soln(idx)%thermo, soln%eq_soln(idx)%T, condensed=.false.)
+            call self%eq_solver%products%calc_thermo(soln%eq_soln(idx)%thermo, soln%eq_soln(idx)%T, condensed=.true.)
             h0 = dot_product(soln%eq_soln(idx)%nj, soln%eq_soln(idx)%thermo%enthalpy)*T5
             dlnV_dlnP = soln%eq_partials(idx)%dlnV_dlnP
             dlnV_dlnT = soln%eq_partials(idx)%dlnV_dlnT
@@ -531,10 +804,8 @@ contains
             call self%update_solution(soln, X(1), X(2), p52, t52, i)
 
             if (i == 1 .and. .not. soln%converged .and. t52 >= ttmax) then
-                call log_warning("ShockSolver_solve_reflected: first-iteration update hit " // &
-                                 "temperature cap; marking reflected point as failed.")
-                soln%eq_soln(idx)%T = 0.0d0
-                soln%pressure(idx) = 0.0d0
+                call ShockSolver_fail_state(soln, idx, "ShockSolver_solve_reflected: first-iteration update hit " // &
+                                            "temperature cap; marking reflected point as failed.")
                 return
             end if
 
@@ -543,10 +814,10 @@ contains
                 soln%rho52 = rho52
                 soln%p52 = p52
                 soln%t52 = t52
-                soln%u(idx) = (u1 - u1*rho12)/rho52
+                soln%u(idx) = (u1 - u1*rho12)/(rho52 - 1.0d0)
                 soln%M52 = wm_k/wm
                 soln%mach(idx) = soln%M52*soln%mach(2)
-                soln%u5_p_v2 = (u1 - u1*rho12)*(1.0d0-1.0d0/rho52)
+                soln%u5_p_v2 = (u1 - u1*rho12)*rho52/(rho52 - 1.0d0)
                 soln%v_sonic(idx) = (R*T5*soln%eq_soln(idx)%gamma_s/wm_k)**0.5d0
                 exit
             end if
@@ -555,14 +826,7 @@ contains
 
         ! Not converged; compute shock properties
         if (.not. soln%converged) then
-            soln%rho52 = rho52
-            soln%p52 = p52
-            soln%t52 = t52
-            soln%u(idx) = (u1 - u1*rho12)/rho52
-            soln%M52 = wm_k/wm
-            soln%mach(idx) = soln%M52*soln%mach(2)
-            soln%u5_p_v2 = (u1 - u1*rho12)*(1.0d0-1.0d0/rho52)
-            soln%v_sonic(idx) = (R*T5*(cp/(cp - 1.0/wm_k))/wm_k)**0.5d0
+            call ShockSolver_fail_state(soln, idx, "ShockSolver_solve_reflected: reflected equilibrium solve did not converge.")
         end if
 
     end subroutine
@@ -581,7 +845,7 @@ contains
         integer :: idx  ! Solution index for the incident conditions
         integer :: i                      ! Loop index
         integer :: ng                     ! Number of gas species
-        real(dp) :: cp                    ! Mixture heat capacity
+        real(dp) :: cp, gamma5            ! Mixture heat capacity, ratio of specific heats
         real(dp) :: wm, wm_k              ! Mixture molecular weight (initial, k-th iteration)
         real(dp) :: h_init, h0            ! Mixture enthalpy (initial, <all other points>)
         real(dp) :: u1                    ! Incident shock velocity
@@ -594,6 +858,7 @@ contains
         real(dp) :: dlnV_dlnP, dlnV_dlnT  ! Partial derivatives
         real(dp) :: rho12                 ! Ratios of chemical potential and density across the incident shock
         real(dp) :: mu25rt, rho52         ! Ratios of chemical potential and density across the reflected shock
+        real(dp) :: rho25_inv             ! Reflected-shock inverse density ratio used in the Newton system
         real(dp) :: tmp                   ! Intermediate variabls
         integer, parameter :: max_iter = 60
         real(dp), parameter :: T_gas_max = 20000.d0  ! Max gas temperature in the thermo database [K]
@@ -616,6 +881,11 @@ contains
         soln%eq_soln(idx)%nj = soln%eq_soln(2)%nj
         soln%eq_soln(idx)%ln_nj = soln%eq_soln(2)%ln_nj
         soln%eq_soln(idx)%n = soln%eq_soln(2)%n
+        soln%eq_soln(idx)%is_active = soln%eq_soln(2)%is_active
+        soln%eq_soln(idx)%active_rank = soln%eq_soln(2)%active_rank
+        soln%eq_soln(idx)%j_liq = soln%eq_soln(2)%j_liq
+        soln%eq_soln(idx)%j_sol = soln%eq_soln(2)%j_sol
+        soln%eq_soln(idx)%j_switch = soln%eq_soln(2)%j_switch
 
         ! Retrieve values from the incident solution
         u1 = soln%u(1)
@@ -652,8 +922,8 @@ contains
             dlnV_dlnP = soln%eq_partials(idx)%dlnV_dlnP
             dlnV_dlnT = soln%eq_partials(idx)%dlnV_dlnT
 
-            rho12 = wm*t52/(wm_k*p52)
-            rho52 = 1./rho12
+            rho25_inv = wm*t52/(wm_k*p52)
+            rho52 = 1./rho25_inv
             soln%rho52 = rho52
             tmp = -mu25rt*rho52/(rho52 - 1.0d0)**2
 
@@ -677,23 +947,25 @@ contains
             call self%update_solution(soln, X(1), X(2), p52, t52, i)
 
             if (i == 1 .and. .not. soln%converged .and. t52 >= ttmax) then
-                call log_warning("ShockSolver_solve_reflected_frozen: first-iteration update hit " // &
-                                 "temperature cap; marking reflected point as failed.")
-                soln%eq_soln(idx)%T = 0.0d0
-                soln%pressure(idx) = 0.0d0
+                call ShockSolver_fail_state(soln, idx, "ShockSolver_solve_reflected_frozen: first-iteration update hit " // &
+                                            "temperature cap; marking reflected point as failed.")
                 return
             end if
 
             ! Convergence check
             if (soln%converged) then
+                call ShockSolver_update_transport(self, soln%eq_soln(idx), frozen_shock=.true.)
+                gamma5 = cp/(cp - 1.0d0/wm_k)
                 soln%rho52 = rho52
                 soln%p52 = p52
                 soln%t52 = t52
-                soln%u(idx) = soln%v2/rho52
+                soln%u(idx) = soln%v2/(rho52 - 1.0d0)
                 soln%M52 = wm_k/wm
                 soln%mach(idx) = soln%M52*soln%mach(2)
-                soln%u5_p_v2 = (u1 - u1*rho12)*(1.0d0-1.0d0/rho52)
-                soln%v_sonic(idx) = (R*T5*(cp/(cp - 1.0/wm_k))/wm_k)**0.5d0
+                soln%u5_p_v2 = (u1 - u1*rho12)*rho52/(rho52 - 1.0d0)
+                soln%eq_partials(idx)%gamma_s = gamma5
+                soln%eq_soln(idx)%gamma_s = gamma5
+                soln%v_sonic(idx) = (R*T5*gamma5/wm_k)**0.5d0
                 exit
             end if
 
@@ -701,14 +973,7 @@ contains
 
         ! Not converged; compute shock properties
         if (.not. soln%converged) then
-            soln%rho52 = rho52
-            soln%p52 = p52
-            soln%t52 = t52
-            soln%u(idx) = soln%v2/rho52
-            soln%M52 = wm_k/wm
-            soln%mach(idx) = soln%M52*soln%mach(2)
-            soln%u5_p_v2 = (u1 - u1*rho12)*(1.0d0-1.0d0/rho52)
-            soln%v_sonic(idx) = (R*T5*(cp/(cp - 1.0/wm_k))/wm_k)**0.5d0
+            call ShockSolver_fail_state(soln, idx, "ShockSolver_solve_reflected_frozen: reflected frozen solve did not converge.")
         end if
 
     end subroutine
@@ -734,7 +999,7 @@ contains
         logical :: reflected_, incident_frozen_, reflected_frozen_    ! Problem flags
         real(dp) :: mach1_, u1_           ! Initial mach and velocity
         integer :: npts                   ! Number of problem types to solve
-        integer :: i, j                   ! Index variables
+        integer :: i, j
         real(dp) :: gamma1                ! Ratio of specific heats at initial condition
         real(dp) :: cp                    ! Mixture heat capacity
         real(dp) :: wm                    ! Mixture molecular weight (initial, k-th iteration)
@@ -757,7 +1022,7 @@ contains
         ! 5. Incident frozen + reflected frozen
         ! 5. Incident frozen + reflected equilbrium
 
-        ! NOTE: solution defaults to equilibrium analysis, which is different than CEA2 default
+        ! NOTE: solution defaults to equilibrium analysis, which differs from CEA2 default.
 
         ! Input handling
         if ((present(u1)) .and. (present(mach1))) then
@@ -828,6 +1093,7 @@ contains
         ! Set the reactant weights as the species amount
         soln%eq_soln(1)%converged = .true.
         soln%eq_soln(1)%nj(:) = 0.0d0
+        soln%eq_soln(1)%ln_nj(:) = self%eq_solver%log_min
         do i = 1, self%eq_solver%num_reactants
             j = findloc(self%eq_solver%products%species_names, self%eq_solver%reactants%species_names(i), 1)
             if (j > 0) then
@@ -851,8 +1117,13 @@ contains
         if (soln%eq_soln(2)%T <= 0.0d0) then
             return
         end if
-        call self%eq_solver%post_process(soln%eq_soln(2))
-
+        if (soln%eq_soln(2)%converged) then
+            call self%eq_solver%post_process(soln%eq_soln(2))
+        end if
+        if (.not. incident_frozen_ .and. reflected_ .and. reflected_frozen_ .and. self%eq_solver%transport) then
+            call ShockSolver_apply_atomic_transport_basis(self, soln%eq_soln(2))
+            call ShockSolver_update_transport(self, soln%eq_soln(2), update_basis=.false.)
+        end if
         ! Compute the reflected shock solution
         if (reflected_) then
             if (reflected_frozen_) then
@@ -863,7 +1134,12 @@ contains
             if (soln%eq_soln(3)%T <= 0.0d0) then
                 return
             end if
-            call self%eq_solver%post_process(soln%eq_soln(3))
+            if (reflected_frozen_) then
+                call self%eq_solver%products%calc_thermo(soln%eq_soln(3)%thermo, soln%eq_soln(3)%T, condensed=.true.)
+                call ShockSolver_finalize_reflected_frozen_state(self, soln, 3)
+            else
+                call self%eq_solver%post_process(soln%eq_soln(3))
+            end if
         end if
 
     end function

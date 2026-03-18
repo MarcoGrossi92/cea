@@ -221,13 +221,19 @@ module cea_equilibrium
         integer :: times_converged       = 0
             !! Number of times the solution has converged without establishing a set of condensed species
 
-        ! Legacy-style transport component basis cached after convergence.
+        ! Transport component basis cached after convergence.
         integer :: transport_basis_rows = 0
             !! Number of active basis rows used by transport reaction assembly
         integer, allocatable :: transport_component_idx(:)
             !! Component species indices (global gas-species indexing) for each basis row
         real(dp), allocatable :: transport_basis_matrix(:, :)
             !! Row-reduced element-by-gas coefficient matrix used by transport reactions
+        integer :: transport_basis_rows_seed = 0
+            !! Last stable transport basis row count
+        integer, allocatable :: transport_component_idx_seed(:)
+            !! Last stable transport component species indices
+        real(dp), allocatable :: transport_basis_matrix_seed(:, :)
+            !! Last stable transport basis matrix
 
         ! Other solution variables
         real(dp), allocatable :: mole_fractions(:)
@@ -264,6 +270,22 @@ module cea_equilibrium
             !! Heat capacity at constant pressure, frozen (kJ/kg-K)
         real(dp) :: cp_eq = 0.0d0
             !! Heat capacity at constant pressure, equilibrium (kJ/kg-K)
+        real(dp) :: cp_eq_transport = 0.0d0
+            !! Heat capacity used in the equilibrium transport model (kJ/kg-K)
+        real(dp) :: viscosity_seed = 0.0d0
+            !! Last stable transport viscosity (millipoise)
+        real(dp) :: cp_fr_seed = 0.0d0
+            !! Last stable frozen transport heat capacity (kJ/kg-K)
+        real(dp) :: cp_eq_transport_seed = 0.0d0
+            !! Last stable equilibrium transport heat capacity (kJ/kg-K)
+        real(dp) :: conductivity_fr_seed = 0.0d0
+            !! Last stable frozen conductivity (mW/cm-K)
+        real(dp) :: conductivity_eq_seed = 0.0d0
+            !! Last stable equilibrium conductivity (mW/cm-K)
+        real(dp) :: Pr_fr_seed = 0.0d0
+            !! Last stable frozen Prandtl number
+        real(dp) :: Pr_eq_seed = 0.0d0
+            !! Last stable equilibrium Prandtl number
         real(dp) :: cv_fr = 0.0d0
             !! Heat capacity at constant volume, frozen (kJ/kg-K)
         real(dp) :: cv_eq = 0.0d0
@@ -621,8 +643,8 @@ contains
 
         ! Update size parameters
         if (self%trace > 0.0d0) then
-            ! Match CEA2 scaling (maxitn = 50 + Ngc/2), where Ngc counts condensed
-            ! species by temperature interval. Approximate Ngc from this data model.
+            ! Scale max iterations with estimated species count, where condensed
+            ! species contribute by temperature interval count.
             ngc_equiv = self%num_gas
             do i = 1, self%num_condensed
                 ngc_equiv = ngc_equiv + max(1, self%products%species(self%num_gas+i)%num_intervals)
@@ -634,7 +656,7 @@ contains
 
         if (self%xsize > 80.0d0) self%xsize = 80.0d0
 
-        ! Match legacy CEA2 behavior: always derive esize from xsize.
+        ! Always derive esize from xsize.
         self%esize = min(80.0d0, self%xsize + 6.90775528d0)
 
         ! Set the max number of times that the solution can converge without establishing a set of condensed species
@@ -936,7 +958,7 @@ contains
         real(dp) :: dln_n                     ! 𝛥ln(n)
         real(dp) :: dln_T                     ! 𝛥ln(T)
         integer :: i, idx_c                   ! Indices
-        integer, allocatable :: active_idx(:) ! Active condensed indices in legacy order
+        integer, allocatable :: active_idx(:) ! Active condensed indices in current active-order mapping
         logical :: ion_species                ! True if gas species is charged and ions are active
         logical :: const_p, const_t           ! Flags enabling/disabling matrix equations
         type(EqConstraints), pointer :: cons  ! Abbreviation for soln%constraints
@@ -1055,7 +1077,7 @@ contains
         real(dp) :: nj_eff_tmp                    ! Temporary species amount
         real(dp) :: sum_nj                        ! Total species amount used in convergence checks
         logical :: ion_species                    ! True if gas species is charged and ions are active
-        logical :: hard_active                    ! Legacy hard-threshold activity flag
+        logical :: hard_active                    ! Hard-threshold activity flag
 
         ! Define shorthand
         ng = self%num_gas
@@ -1178,7 +1200,7 @@ contains
         ! ---------------------------------------------------------------------------
         if (self%trace > 0.0d0) then
             do i = 1, ne
-                ! Match CEA2 behavior: if denominator is zero, skip ratio check.
+                ! If denominator is zero, skip ratio check.
                 if (abs(pi(i)) > tiny(1.0d0)) then
                     if (abs((pi_prev(i) - pi(i))/pi(i)) > pi_tol) then
                         soln%pi_converged = .false.
@@ -1211,7 +1233,7 @@ contains
                 sum2 = 0.0d0
                 do j = 1, ng
                     if (A_g(j, ne_full) /= 0.0d0) then
-                        ! NOTE(smooth_truncation): Preserve legacy hard-threshold semantics
+                        ! NOTE(smooth_truncation): Preserve hard-threshold semantics
                         ! when smooth truncation is disabled. Smooth mode uses
                         ! sigmoid-gated amounts in this ion-convergence loop.
                         temp_raw = 0.0d0
@@ -1296,7 +1318,7 @@ contains
         real(dp), pointer :: h_or_s_or_u(:)     ! For evaluating Eq 2.27/2.28
         integer :: r, c                         ! Iteration matrix row/column indices
         integer :: i, j                         ! Loop counters
-        integer, allocatable :: active_idx(:)   ! Active condensed indices in legacy order
+        integer, allocatable :: active_idx(:)   ! Active condensed indices in current active-order mapping
         logical :: ion_species                  ! True if gas species is charged and ions are active
         logical :: const_p, const_t, const_s, const_h, const_u  ! Flags enabling/disabling matrix equations
         type(EqConstraints), pointer :: cons    ! Abbreviation for soln%constraints
@@ -1555,7 +1577,7 @@ contains
         integer :: nc                              ! Number of condensed species
         integer :: na                              ! Number of active condensed species
         integer :: i, j, idx_c                     ! Index
-        integer, allocatable :: active_idx(:)      ! Active condensed indices in legacy order
+        integer, allocatable :: active_idx(:)      ! Active condensed indices in current active-order mapping
         real(dp) :: T_low_i, T_high_i              ! Low and high temperature limits for a species [K]
         real(dp) :: T_low_j, T_high_j              ! Low and high temperature limits for a species [K]
         real(dp) :: max_T_j                        ! Max melting temperature of the candidate phase [K]
@@ -1573,7 +1595,7 @@ contains
         made_change = .false.
         allocate(active_idx(0))
 
-        ! Legacy CEA applies condensed-phase validity checks during TP solves too.
+        ! Apply condensed-phase validity checks during TP solves as well.
         if (na == 0) return
 
         ! Update condensed thermodynamic properties
@@ -1734,7 +1756,7 @@ contains
         real(dp), pointer :: s_c(:)               ! Condensed entropies [unitless]
         real(dp), pointer :: A_c(:,:)             ! Condensed stoichiometric matrices
         real(dp), pointer :: pi(:)                ! 𝛑_j (k-th iteration)
-        integer, allocatable :: active_idx(:)     ! Active condensed indices in legacy order
+        integer, allocatable :: active_idx(:)     ! Active condensed indices in current active-order mapping
         logical :: made_change                    ! Flag to indicate if a species was added or removed (used for other subroutine calls)
         real(dp), parameter :: T_min = 200.0d0    ! Minimum gas temperature defined in thermo data [K]
         real(dp), parameter :: tol = 1d-12
@@ -1864,7 +1886,7 @@ contains
         integer :: nc                        ! Number of condensed species
         integer :: ne                        ! Number of elements
         integer :: na                        ! Number of active condensed species
-        integer, allocatable :: active_idx(:)! Active condensed indices in legacy order
+        integer, allocatable :: active_idx(:)! Active condensed indices in current active-order mapping
         real(dp), pointer :: A(:,:)          ! Stoichiometric matrix
         real(dp), pointer :: A_all(:,:)      ! Full stoichiometric matrix
         real(dp), parameter :: tol = 1.d-8   ! Tolerance to check if value ~0
@@ -1923,7 +1945,7 @@ contains
                 made_change = .true.
             end if
 
-        ! Legacy-inspired recovery for element-row singularities:
+        ! Recovery for element-row singularities:
         ! remove the smallest active condensed species that participates
         ! in the singular element equation.
         else if (ierr >= 1 .and. ierr <= ne .and. na > 0) then
@@ -1968,7 +1990,7 @@ contains
             end if
         end if
 
-        ! Legacy ion-row fallback: if the electron equation is singular, remove
+        ! Ion-row fallback: if the electron equation is singular, remove
         ! ionized species from the active iterate and disable ion solving.
         if (.not. made_change .and. ierr >= 1 .and. ierr <= ne .and. &
             self%ions .and. self%active_ions .and. self%num_elements > 0) then
@@ -1990,7 +2012,7 @@ contains
             end if
         end if
 
-        ! Legacy component-reduction fallback for persistent element-row singularities.
+        ! Component-reduction fallback for persistent element-row singularities.
         if (.not. made_change .and. ierr >= 1 .and. ierr <= ne .and. iter < 1 .and. &
             ne > 1 .and. .not. (self%ions .and. self%active_ions)) then
             call log_info("Reducing active element equations after singular restart on "// &
@@ -2006,11 +2028,11 @@ contains
             if (present(reduced_to)) reduced_to = ne
         end if
 
-        ! Legacy fallback path: seed trace gas species to break persistent singularity.
+        ! Fallback path: seed trace gas species to break persistent singularity.
         if (.not. made_change) then
             do i = 1, ng
-                ! NOTE(smooth_truncation): Legacy singular-recovery path intentionally seeds
-                ! only non-positive species to preserve historical restart behavior.
+                ! NOTE(smooth_truncation): Singular-recovery path intentionally seeds
+                ! only non-positive species to preserve restart behavior.
                 if (soln%nj(i) <= 0.0d0) then
                     soln%nj(i) = smalno
                     soln%ln_nj(i) = smnol
@@ -2026,7 +2048,7 @@ contains
     end subroutine
 
     subroutine EqSolver_update_transport_basis(self, soln)
-        ! Cache a legacy-style component basis for transport-reaction assembly.
+        ! Cache a component basis for transport-reaction assembly.
         class(EqSolver), intent(in), target :: self
         type(EqSolution), intent(inout), target :: soln
 
@@ -2272,6 +2294,16 @@ contains
         soln%j_sol_seed = soln%j_sol
         soln%j_switch_seed = soln%j_switch
         soln%last_cond_idx_seed = soln%last_cond_idx
+        soln%transport_basis_rows_seed = soln%transport_basis_rows
+        soln%viscosity_seed = soln%viscosity
+        soln%cp_fr_seed = soln%cp_fr
+        soln%cp_eq_transport_seed = soln%cp_eq_transport
+        soln%conductivity_fr_seed = soln%conductivity_fr
+        soln%conductivity_eq_seed = soln%conductivity_eq
+        soln%Pr_fr_seed = soln%Pr_fr
+        soln%Pr_eq_seed = soln%Pr_eq
+        if (allocated(soln%transport_component_idx_seed)) soln%transport_component_idx_seed = soln%transport_component_idx
+        if (allocated(soln%transport_basis_matrix_seed)) soln%transport_basis_matrix_seed = soln%transport_basis_matrix
     end subroutine
 
     subroutine EqSolution_restore_seed(soln)
@@ -2288,6 +2320,36 @@ contains
         soln%j_sol = soln%j_sol_seed
         soln%j_switch = soln%j_switch_seed
         soln%last_cond_idx = soln%last_cond_idx_seed
+        soln%transport_basis_rows = soln%transport_basis_rows_seed
+        soln%viscosity = soln%viscosity_seed
+        soln%cp_fr = soln%cp_fr_seed
+        soln%cp_eq_transport = soln%cp_eq_transport_seed
+        soln%conductivity_fr = soln%conductivity_fr_seed
+        soln%conductivity_eq = soln%conductivity_eq_seed
+        soln%Pr_fr = soln%Pr_fr_seed
+        soln%Pr_eq = soln%Pr_eq_seed
+        if (allocated(soln%transport_component_idx_seed)) soln%transport_component_idx = soln%transport_component_idx_seed
+        if (allocated(soln%transport_basis_matrix_seed)) soln%transport_basis_matrix = soln%transport_basis_matrix_seed
+    end subroutine
+
+    logical function EqSolution_has_transport_seed(soln) result(has_seed)
+        type(EqSolution), intent(in) :: soln
+
+        has_seed = soln%viscosity_seed > 0.0d0
+    end function
+
+    subroutine EqSolution_restore_transport_seed(soln)
+        type(EqSolution), intent(inout) :: soln
+
+        if (.not. EqSolution_has_transport_seed(soln)) return
+
+        soln%viscosity = soln%viscosity_seed
+        soln%cp_fr = soln%cp_fr_seed
+        soln%cp_eq_transport = soln%cp_eq_transport_seed
+        soln%conductivity_fr = soln%conductivity_fr_seed
+        soln%conductivity_eq = soln%conductivity_eq_seed
+        soln%Pr_fr = soln%Pr_fr_seed
+        soln%Pr_eq = soln%Pr_eq_seed
     end subroutine
 
     subroutine EqSolver_solve(self, soln, type, state1, state2, reactant_weights, partials)
@@ -2342,7 +2404,7 @@ contains
 
         ! Initialize values
         self%tsize = 18.420681d0  ! Re-set in case solver is being re-used
-        times_singular = 0  ! Number of times a singular matrix was encountered ("ixsing" in CEA2)
+        times_singular = 0  ! Number of times a singular matrix was encountered
         soln%times_converged = 0  ! Number of times initial convergence was established
         soln%j_switch = 0  ! Make sure this is reset every time
         self%active_ions = self%ions
@@ -2396,6 +2458,11 @@ contains
                 times_singular = times_singular + 1
                 if (times_singular > 8) then
                     soln%converged = .false.
+                    if (EqSolution_has_transport_seed(soln)) then
+                        call EqSolution_restore_seed(soln)
+                    else if (soln%T > 0.0d0 .and. soln%n > 0.0d0) then
+                        call EqSolution_restore_transport_seed(soln)
+                    end if
                     call EqSolver_restore_reduced_elements(self, soln, num_reduced, reduced_from, reduced_to)
                     call log_warning('EqSolver_solve: Too many singular matrices encountered.')
                     return
@@ -2442,7 +2509,7 @@ contains
                 end do
 
                 if (.not. soln%converged) then
-                    ! Legacy-style fallback for high-temperature condensed edge cases.
+                    ! Fallback for high-temperature condensed edge cases.
                     gas_moles = sum(soln%nj(:self%num_gas))
                     if (.not. max_iter_fallback_used) then
                         if (self%num_gas > 0 .and. &
@@ -2475,6 +2542,11 @@ contains
                     end if
 
                     call self%post_process(soln, .false.)
+                    if (EqSolution_has_transport_seed(soln)) then
+                        call EqSolution_restore_seed(soln)
+                    else
+                        call EqSolution_restore_transport_seed(soln)
+                    end if
                     call EqSolver_restore_reduced_elements(self, soln, num_reduced, reduced_from, reduced_to)
                     call log_warning('EqSolver_solve: Maximum iterations reached without convergence')
                     return
@@ -2495,6 +2567,8 @@ contains
 
                 ! Compute transport properties
                 if (self%transport) then
+                    ! Use the current retained component set for transport.
+                    ! Always refresh the transport basis from the finalized state.
                     call self%update_transport_basis(soln)
                     call compute_transport_properties(self, soln)
                 end if
@@ -4141,10 +4215,12 @@ contains
         allocate(self%active_rank_seed(solver%num_condensed), source=0)
         allocate(self%transport_component_idx(solver%num_elements), source=0)
         allocate(self%transport_basis_matrix(solver%num_elements, solver%num_gas), source=0.0d0)
+        allocate(self%transport_component_idx_seed(solver%num_elements), source=0)
+        allocate(self%transport_basis_matrix_seed(solver%num_elements, solver%num_gas), source=0.0d0)
         self%constraints = EqConstraints(solver%num_elements)
 
         ! Set initial guess
-        ! From CEA2: Assume a temperature of 3800K with a total molar
+        ! Assume a temperature of 3800K with a total molar
         ! concentration of 0.1d0. The total mole count is split evenly between
         ! all gas species + and condensed species requested via the "insert"
         ! keyword. For simplicity, we ignore the inserted species here; that
@@ -4214,7 +4290,7 @@ contains
         if (size(nj_init) == solver%num_products) then
             self%nj = nj_init
             do i = 1, solver%num_gas
-                ! NOTE(smooth_truncation): Initialization keeps the legacy hard floor for
+                ! NOTE(smooth_truncation): Initialization keeps the hard floor for
                 ! non-positive seeds to preserve stable and backward-compatible starts.
                 if (self%nj(i) <= 0.0d0) then
                     self%nj(i) = smalno
@@ -4497,7 +4573,7 @@ contains
         real(dp), pointer :: A_g(:,:), A_c(:,:) ! Gas/condensed stoichiometric matrices
         integer :: r, c                         ! Iteration matrix row/column indices
         integer :: i, k, ic                     ! Loop counters
-        integer, allocatable :: active_idx(:)   ! Active condensed indices in legacy order
+        integer, allocatable :: active_idx(:)   ! Active condensed indices in current active-order mapping
 
         allocate(active_idx(0))
 
@@ -4598,7 +4674,7 @@ contains
         real(dp), pointer :: A_g(:,:), A_c(:,:) ! Gas/condensed stoichiometric matrices
         integer :: r, c                         ! Iteration matrix row/column indices
         integer :: i, k, ic                     ! Loop counters
-        integer, allocatable :: active_idx(:)   ! Active condensed indices in legacy order
+        integer, allocatable :: active_idx(:)   ! Active condensed indices in current active-order mapping
 
         allocate(active_idx(0))
 
@@ -4949,7 +5025,7 @@ contains
         num_match = 0
         do i = 1, size(products%species_names(ng+1:))
 
-            ! Keep the current phase in this list to preserve legacy phase-pair logic.
+            ! Keep the current phase in this list to preserve phase-pair logic.
             ! Downstream checks rely on seeing the active phase while iterating candidates.
 
             test_name = trim_phase(products%species_names(ng+i))
@@ -5020,6 +5096,7 @@ contains
         real(dp) :: best_nj
         real(dp) :: te, ekt, qc, xsel, debye, ionic, lambda  ! Variables for ionized species interactions
         real(dp), parameter :: tol = 1.d-8    ! Tolerance to test if a value is ~ zero
+        real(dp), parameter :: test_tot_rel_tol = 1.d-6
         real(dp) :: test_tot, test_nj
         real(dp) :: nj_el                     ! Electron concentration
         real(dp) :: nj_cutoff                 ! Minimum species concentration to include
@@ -5055,9 +5132,11 @@ contains
         integer, parameter :: max_tr = 40     ! Maximum allowable transport species
         logical, allocatable :: selected_species(:)
 
-        if (present(frozen_shock)) then
-            continue  ! Placeholder for future frozen-shock transport handling.
-        end if
+        logical :: frozen_transport_only
+        real(dp), parameter :: transport_log_cutoff = 25.328436d0
+
+        frozen_transport_only = .false.
+        if (present(frozen_shock)) frozen_transport_only = frozen_shock
 
         ! Define shorthand
         np = eq_solver%transport_db%num_pure
@@ -5081,13 +5160,13 @@ contains
         cond = 0.0d0
 
         ! Build the list of relevant mixture species.
-        ! Legacy CEA seeds transport from a basis-like set (Jcm/Lsave), then expands by abundance.
+        ! Seed transport species from a component basis, then expand by abundance.
         ! We approximate that behavior by seeding one dominant carrier per active element, then
         ! adding monoatomic species and finally expanding by threshold.
         nm = 0
         total = 0.0d0
         selected_species = .false.
-        wtmol = 1.0/sum(eq_soln%nj)
+        wtmol = 1.0d0/eq_soln%n
         nj_cutoff = 1.d-11/wtmol
         test_tot = 0.999999999d0/wtmol
         max_elem_idx = eq_solver%num_elements
@@ -5098,7 +5177,7 @@ contains
             ! TODO(smooth_truncation): transport species screening currently uses hard-zero semantics.
             ! Revisit whether smooth mode should use a practical-zero cutoff instead.
             if (eq_soln%nj(i) <= 0.0d0) then
-                if (eq_soln%ln_nj(i) - log(eq_soln%n) + eq_solver%xsize > 0.0d0) then
+                if (eq_soln%ln_nj(i) - log(eq_soln%n) + transport_log_cutoff > 0.0d0) then
                     eq_soln%nj(i) = exp(eq_soln%ln_nj(i))
                 end if
             end if
@@ -5162,31 +5241,31 @@ contains
 
         ! Add the remaining species that meet the minimum size threshold
         do i = 1, ng
-            if (total <= test_tot .and. nm < max_tr) then
-                test_nj = test_nj / 10.0d0
-                do j = 1, ng
-                    if (eq_soln%nj(j) >= test_nj .and. .not. selected_species(j)) then
-                        if (nm >= max_tr) then
-                            call log_info("Reached maximum number of allowable transport species.")
-                            exit
-                        else
-                            total = total + eq_soln%nj(j)
-                            nm = nm + 1
-                            idx_list(nm) = j
-                            selected_species(j) = .true.
-                            eq_soln%nj(j) = -eq_soln%nj(j)
-                        end if
+            if (total >= test_tot*(1.0d0 - test_tot_rel_tol)) exit
+            if (nm >= max_tr) then
+                call log_info("Reached maximum number of allowable transport species.")
+                exit
+            end if
+            test_nj = test_nj / 10.0d0
+            do j = 1, ng
+                if (eq_soln%nj(j) >= test_nj .and. .not. selected_species(j)) then
+                    if (nm >= max_tr) then
+                        call log_info("Reached maximum number of allowable transport species.")
+                        exit
+                    else
+                        total = total + eq_soln%nj(j)
+                        nm = nm + 1
+                        idx_list(nm) = j
+                        selected_species(j) = .true.
+                        eq_soln%nj(j) = -eq_soln%nj(j)
                     end if
-                end do
-                if (test_nj < nj_cutoff) then
-                    exit
                 end if
-            else
+            end do
+            if (test_nj < nj_cutoff) then
                 exit
             end if
         end do
         idx_list = idx_list(:nm)
-
         ! Undo the negative species concentrations
         do i = 1, ng
             if (eq_soln%nj(i) < 0.0d0) then
@@ -5283,7 +5362,7 @@ contains
         end do
 
         ! Build the stoichiometric matrix for the chemical reactions.
-        ! Prefer the cached equilibrium component basis to match legacy TRANIN/TRANP behavior.
+        ! Prefer the cached equilibrium component basis for consistent reaction assembly.
         alpha = alpha(:, :nm)
         alpha = 0.0d0
         is_component = .false.
@@ -5312,7 +5391,7 @@ contains
             end do
         end if
 
-        ! Legacy TRANIN uses Lsave components, which can include the electron row
+        ! The selected component basis can include the electron row
         ! when ions are active. Append the electron species as an extra component
         ! if it is present in the selected transport set but not already included.
         if (eq_solver%ions) then
@@ -5357,6 +5436,7 @@ contains
                 k = k + 1
             end do
         end if
+
         do i = 1, nm
             if (xs(i) < 1.d-10) then
                 m = 1
@@ -5523,6 +5603,10 @@ contains
         ! Calculate reaction heat capacity and thermal conductivity
         ! --------------------------------------------------------------
 
+        if (frozen_transport_only) then
+            nr = 0
+        end if
+
         if (nr > 0) then
             delh = delh(:nr)
             G = G(:nr, :nr+1)
@@ -5627,8 +5711,15 @@ contains
 
         ! Compute the remaining properties
         eq_soln%pr_fr = eq_soln%viscosity*eq_soln%cp_fr/eq_soln%conductivity_fr
+        if (frozen_transport_only) then
+            eq_soln%cp_eq_transport = 0.0d0
+            eq_soln%conductivity_eq = 0.0d0
+            eq_soln%pr_eq = 0.0d0
+            return
+        end if
         cpreac = cpreac/wtmol
         cp_eq = eq_soln%cp_fr + cpreac
+        eq_soln%cp_eq_transport = cp_eq
         eq_soln%conductivity_eq = eq_soln%conductivity_fr + (reacon*1.d-3)
         eq_soln%pr_eq = eq_soln%viscosity*cp_eq/eq_soln%conductivity_eq
 

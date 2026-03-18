@@ -31,6 +31,7 @@ program cea
     type(RocketSolution), allocatable :: rkt_solutions(:,:,:)
     type(ShockSolver) :: shk_solver
     type(ShockSolution), allocatable :: shk_solutions(:,:,:)
+    integer, allocatable :: shk_branch_codes(:)
     type(DetonSolver) :: det_solver
     type(DetonSolution), allocatable :: det_solutions(:,:,:)
     integer :: n
@@ -108,9 +109,9 @@ program cea
             case ("shk")
                 call log_info('Solving shock problem:')
 
-                call run_shock_problem(prob, all_thermo, shk_solver, shk_solutions)
-                call shock_output(1, prob, shk_solver, shk_solutions)
-                deallocate(shk_solutions)
+                call run_shock_problem(prob, all_thermo, shk_solver, shk_solutions, shk_branch_codes)
+                call shock_output(1, prob, shk_solver, shk_solutions, shk_branch_codes)
+                deallocate(shk_solutions, shk_branch_codes)
 
             case ("det")
                 call log_info('Solving detonation problem:')
@@ -503,7 +504,7 @@ contains
 
     end subroutine
 
-    subroutine run_shock_problem(prob, thermo, solver, solutions)
+    subroutine run_shock_problem(prob, thermo, solver, solutions, branch_codes)
         ! Loop over problem state values and solve shock problems
 
         ! Arguments
@@ -511,6 +512,7 @@ contains
         type(ThermoDB), intent(in) :: thermo
         type(ShockSolver), intent(out) :: solver
         type(ShockSolution), allocatable, intent(out) :: solutions(:, :, :)
+        integer, allocatable, intent(out) :: branch_codes(:)
 
         ! Locals
         type(Mixture) :: reactants, products
@@ -518,7 +520,15 @@ contains
         real(dp) :: T0, P0, u1, mach1
         real(dp), allocatable :: weights(:)
         logical :: incident, input_reflected, frozen, equilibrium, incident_frozen, reflected_frozen, reflected, use_mach
+        logical :: stop_after_branch, branch_failed
         integer :: i, k, idx_P, idx_T, npts, num_u1, num_P, num_T
+        integer, parameter :: BR_INCD_EQ = 1
+        integer, parameter :: BR_INCD_EQ_REFL_FRZ = 2
+        integer, parameter :: BR_REFL_EQ_FROM_EQ = 3
+        integer, parameter :: BR_INCD_FRZ = 4
+        integer, parameter :: BR_INCD_FRZ_REFL_FRZ = 5
+        integer, parameter :: BR_REFL_EQ_FROM_FRZ = 6
+        integer, parameter :: BR_INCD_EQ_REFL_EQ = 7
         character(snl), allocatable :: product_names(:)
 
         ! Get the reactants Mixture object
@@ -546,8 +556,10 @@ contains
 
         if (prob%problem%shk_reflected) then
             input_reflected = .true.
+            reflected = .true.
         else
             input_reflected = .false.
+            reflected = .false.
             if (.not. incident) then
                 incident = .true.  ! Incident by default
             end if
@@ -568,35 +580,28 @@ contains
             end if
         end if
 
-        ! Total number of shock problem permutations and set solve flags
-        npts = 1
-        if (equilibrium .and. frozen) then
-            if (incident .and. input_reflected) then
-                npts = 4
-            else
-                npts = 2
-            end if
-        else ! npts = 1
-            reflected = input_reflected
+        ! Match the SHCK branch sequencing. When the input explicitly requests
+        ! incident-shock output (`inc`), CEA2 reports only that incident branch,
+        ! with the reflected state attached if requested. The extra mixed
+        ! equilibrium/frozen permutations are only explored for reflected-only
+        ! request patterns.
+        if (incident) then
+            npts = 1
+        else
+            npts = 0
             if (equilibrium) then
-                if (incident) then
-                    incident_frozen = .false.
-                else
-                    incident_frozen = .true.
+                npts = npts + 1
+                if (input_reflected .and. frozen) then
+                    npts = npts + 1
+                else if (input_reflected) then
+                    ! Equilibrium-only reflected shock prints incident and reflected states together.
                 end if
-                reflected_frozen = .false.
-            else if (frozen) then
-                incident_frozen = .true.
-                if (reflected) then
-                    reflected_frozen = .true.
-                else
-                    reflected_frozen = .false.
-                end if
-            else
-                ! Weird but true: frozen and equilibrium are both false, only run incident frozen, even if reflected is true
-                incident_frozen = .true.
-                reflected_frozen = .false.
             end if
+            if (frozen) then
+                npts = npts + 1
+                if (input_reflected .and. equilibrium) npts = npts + 1
+            end if
+            if (npts == 0) npts = 1
         end if
 
         ! Get the loop sizes
@@ -624,6 +629,7 @@ contains
 
         ! Loop over problem state values
         allocate(solutions(num_u1, 1, npts))
+        allocate(branch_codes(npts), source=0)
 
         ! Initialize the ShockSolver and ShockSolution objects
         if (allocated(prob%output%trace)) then
@@ -644,43 +650,115 @@ contains
             end if
         end if
 
-        do k = 1, npts ! Loop over the number of permutations
+        k = 0
+        stop_after_branch = .false.
 
-            ! Set the problem flags if npts > 1 (equilibrium and frozen both true)
-            if (npts > 1) then
-                if (k == 1) then
-                    if (incident) then
-                        incident_frozen = .false.
-                        reflected_frozen = input_reflected
-                        reflected = input_reflected
-                    else
-                        incident_frozen = .true.
-                        reflected_frozen = .true.
-                    end if
-                else if (k == 2) then
-                    if (incident .and. input_reflected) then
-                        incident_frozen = .false.
-                        reflected = .true.
-                        reflected_frozen = .false.
-                    else if (incident) then
-                        incident_frozen = .true.
-                        reflected = .false.
-                        reflected_frozen = .false.
-                    else
-                        incident_frozen = .true.
-                        reflected = .true.
-                        reflected_frozen = .false.
-                    end if
-                else if (k == 3) then
-                    incident_frozen = .true.
-                    reflected = .true.
-                    reflected_frozen = .true.
-                else  ! k == 4
-                    incident_frozen = .true.
-                    reflected = .true.
-                    reflected_frozen = .false.
-                end if
+        if (equilibrium) then
+            k = k + 1
+            if (input_reflected .and. frozen) then
+                branch_codes(k) = BR_INCD_EQ_REFL_FRZ
+                incident_frozen = .false.
+                reflected = .true.
+                reflected_frozen = .true.
+            else if (input_reflected) then
+                branch_codes(k) = BR_INCD_EQ_REFL_EQ
+                incident_frozen = .false.
+                reflected = .true.
+                reflected_frozen = .false.
+            else
+                branch_codes(k) = BR_INCD_EQ
+                incident_frozen = .false.
+                reflected = .false.
+                reflected_frozen = .false.
             end if
+
+            branch_failed = .false.
+            do i = 1, num_u1
+                if (use_mach) then
+                    mach1 = prob%problem%mach1_schedule%values(i)
+                else
+                    u1 = prob%problem%u1_schedule%values(i)
+                end if
+
+                idx_P = merge(num_P, i, i > num_P)
+                P0 = get_state2(prob, idx_P)
+                idx_T = merge(num_T, i, i > num_T)
+                if (allocated(prob%problem%t_schedule)) then
+                    T0 = prob%problem%t_schedule%values(idx_T)
+                else if (allocated(prob%reactants(1)%temperature)) then
+                    T0 = prob%reactants(1)%temperature%values(1)
+                else
+                    call abort("Temperature not supplied for shock problem")
+                end if
+
+                weights = get_problem_weights(prob, reactants, 1)
+                if (use_mach) then
+                    solution = solver%solve(weights, T0, P0, mach1=mach1, reflected=reflected, &
+                                            reflected_frozen=reflected_frozen, incident_frozen=incident_frozen)
+                else
+                    solution = solver%solve(weights, T0, P0, u1=u1, reflected=reflected, &
+                                            reflected_frozen=reflected_frozen, incident_frozen=incident_frozen)
+                end if
+                solutions(i, 1, k) = solution
+                if (.not. solution%converged .and. input_reflected) branch_failed = .true.
+            end do
+
+            if ((.not. incident) .and. input_reflected .and. frozen) then
+                k = k + 1
+                branch_codes(k) = BR_REFL_EQ_FROM_EQ
+                incident_frozen = .false.
+                reflected = .true.
+                reflected_frozen = .false.
+
+                branch_failed = .false.
+                do i = 1, num_u1
+                    if (use_mach) then
+                        mach1 = prob%problem%mach1_schedule%values(i)
+                    else
+                        u1 = prob%problem%u1_schedule%values(i)
+                    end if
+
+                    idx_P = merge(num_P, i, i > num_P)
+                    P0 = get_state2(prob, idx_P)
+                    idx_T = merge(num_T, i, i > num_T)
+                    if (allocated(prob%problem%t_schedule)) then
+                        T0 = prob%problem%t_schedule%values(idx_T)
+                    else if (allocated(prob%reactants(1)%temperature)) then
+                        T0 = prob%reactants(1)%temperature%values(1)
+                    else
+                        call abort("Temperature not supplied for shock problem")
+                    end if
+
+                    weights = get_problem_weights(prob, reactants, 1)
+                    if (use_mach) then
+                        solution = solver%solve(weights, T0, P0, mach1=mach1, reflected=reflected, &
+                                                reflected_frozen=reflected_frozen, incident_frozen=incident_frozen)
+                    else
+                        solution = solver%solve(weights, T0, P0, u1=u1, reflected=reflected, &
+                                                reflected_frozen=reflected_frozen, incident_frozen=incident_frozen)
+                    end if
+                    solutions(i, 1, k) = solution
+                    if (.not. solution%converged .or. solution%eq_soln(3)%T <= 0.0d0) branch_failed = .true.
+                end do
+
+            end if
+            ! If any reflected-equilibrium branch fails, skip downstream frozen
+            ! permutations and keep only the successful branch outputs.
+            if (input_reflected .and. branch_failed) stop_after_branch = .true.
+        end if
+
+        if (frozen .and. .not. stop_after_branch .and. (.not. incident .or. .not. equilibrium)) then
+            k = k + 1
+            if (input_reflected) then
+                branch_codes(k) = BR_INCD_FRZ_REFL_FRZ
+                reflected = .true.
+                reflected_frozen = .true.
+            else
+                branch_codes(k) = BR_INCD_FRZ
+                reflected = .false.
+                reflected_frozen = .false.
+            end if
+            incident_frozen = .true.
 
             do i = 1, num_u1 ! Loop over initial velocity or Mach values
                 ! NOTE: Initial velocity or Mach number determines the number of output points. If
@@ -731,7 +809,43 @@ contains
                 end if
                 solutions(i, 1, k) = solution
             end do
-        end do
+
+            if (input_reflected .and. equilibrium) then
+                k = k + 1
+                branch_codes(k) = BR_REFL_EQ_FROM_FRZ
+                incident_frozen = .true.
+                reflected = .true.
+                reflected_frozen = .false.
+                do i = 1, num_u1
+                    if (use_mach) then
+                        mach1 = prob%problem%mach1_schedule%values(i)
+                    else
+                        u1 = prob%problem%u1_schedule%values(i)
+                    end if
+
+                    idx_P = merge(num_P, i, i > num_P)
+                    P0 = get_state2(prob, idx_P)
+                    idx_T = merge(num_T, i, i > num_T)
+                    if (allocated(prob%problem%t_schedule)) then
+                        T0 = prob%problem%t_schedule%values(idx_T)
+                    else if (allocated(prob%reactants(1)%temperature)) then
+                        T0 = prob%reactants(1)%temperature%values(1)
+                    else
+                        call abort("Temperature not supplied for shock problem")
+                    end if
+
+                    weights = get_problem_weights(prob, reactants, 1)
+                    if (use_mach) then
+                        solution = solver%solve(weights, T0, P0, mach1=mach1, reflected=reflected, &
+                                                reflected_frozen=reflected_frozen, incident_frozen=incident_frozen)
+                    else
+                        solution = solver%solve(weights, T0, P0, u1=u1, reflected=reflected, &
+                                                reflected_frozen=reflected_frozen, incident_frozen=incident_frozen)
+                    end if
+                    solutions(i, 1, k) = solution
+                end do
+            end if
+        end if
 
     end subroutine
 
@@ -857,7 +971,7 @@ contains
         end do
     end subroutine
 
-    subroutine shock_output(ioout, prob, solver, solutions)
+    subroutine shock_output(ioout, prob, solver, solutions, branch_codes)
         ! Write out an output file for shock problems
 
         ! Arguments
@@ -865,19 +979,26 @@ contains
         type(ProblemDB), intent(in) :: prob
         type(ShockSolver), intent(in) :: solver
         type(ShockSolution), intent(in) :: solutions(:, :, :)
+        integer, intent(in) :: branch_codes(:)
 
         ! Locals
         integer :: i, j, k, m, npts, idx, last_row_cols, nrows, ncols, num_trace
         ! integer, parameter :: max_cols = 6
         real(dp) :: trace
-        logical :: incident, reflected, equilibrium, frozen, input_reflected
         logical :: write_incd_frz, write_refl_frz, write_incd_eql, write_refl_eql
-        logical :: use_mach
+        logical :: use_mach, have_incident_state, have_reflected_state
         character(snl), allocatable :: trace_names(:)
         logical, allocatable :: is_trace(:)
         character(:), allocatable :: eq_fmt
         character(4) :: mass_or_mole
         character(11) :: refl_type, incd_type
+        integer, parameter :: BR_INCD_EQ = 1
+        integer, parameter :: BR_INCD_EQ_REFL_FRZ = 2
+        integer, parameter :: BR_REFL_EQ_FROM_EQ = 3
+        integer, parameter :: BR_INCD_FRZ = 4
+        integer, parameter :: BR_INCD_FRZ_REFL_FRZ = 5
+        integer, parameter :: BR_REFL_EQ_FROM_FRZ = 6
+        integer, parameter :: BR_INCD_EQ_REFL_EQ = 7
 
         ! Initialization
         m = size(solutions, 1)  ! Number of initial velocities or Mach numbers
@@ -895,130 +1016,64 @@ contains
             mass_or_mole = "MASS"
         end if
 
-        if (prob%problem%shk_incident) then
-            incident = .true.
-        else
-            incident = .false.
-        end if
-
-        if (prob%problem%shk_reflected) then
-            input_reflected = .true.
-        else
-            input_reflected = .false.
-            if (.not. incident) then
-                incident = .true.  ! Incident by default
-            end if
-        end if
-
-        if (prob%problem%equilibrium) then
-            equilibrium = .true.
-        else
-            equilibrium = .false.
-        end if
-
-        if (prob%problem%frozen) then
-            frozen = .true.
-        else
-            frozen = .false.
-            if (.not. equilibrium) then
-                frozen = .true.  ! Frozem by default
-            end if
-        end if
-
-        ! Total number of shock problem permutations and set solve flags
-        npts = size(solutions, 3)
-
-        ! Set output flags when npts = 1
-        if (npts == 1) then
-            if (equilibrium) then
-                write_refl_eql = input_reflected
-                write_refl_frz = .false.
-                refl_type = "EQUILIBRIUM"
-                if (incident) then
-                    write_incd_frz = .false.
-                    write_incd_eql = .true.
-                    incd_type = "EQUILIBRIUM"
-                end if
-            else if (frozen) then
-                write_incd_frz = .true.
-                write_incd_eql = .false.
-                incd_type = "FROZEN     "
-                refl_type = "FROZEN     "
-                write_refl_eql = .false.
-                if (reflected) then
-                    write_refl_frz = .true.
-                else
-                    write_refl_frz = .false.
-                end if
-            else
-                write_incd_frz = .true.
-                write_incd_eql = .false.
-                incd_type = "FROZEN     "
-                write_refl_eql = .false.
-                write_refl_frz = .false.
-            end if
-        end if
+        npts = size(branch_codes)
 
         do k = 1, npts
+            write_incd_frz = .false.
+            write_refl_frz = .false.
+            write_incd_eql = .false.
+            write_refl_eql = .false.
+            incd_type = "FROZEN     "
+            refl_type = "FROZEN     "
 
-            ! Set the output flags when npts > 1 (equilibrium and frozen both true)
-            if (npts > 1) then
-                if (k == 1) then
-                    if (incident .and. reflected) then
-                        write_incd_frz = .false.
-                        write_incd_eql = .true.
-                        incd_type = "EQUILIBRIUM"
-                        write_refl_frz = .true.
-                        write_refl_eql = .false.
-                        refl_type = "FROZEN     "
-                    else if (incident) then
-                        write_incd_frz = .false.
-                        write_incd_eql = .true.
-                        incd_type = "EQUILIBRIUM"
-                        write_refl_frz = .false.
-                        write_refl_eql = .false.
-                    else
-                        write_incd_frz = .true.
-                        write_incd_eql = .false.
-                        incd_type = "FROZEN     "
-                        write_refl_frz = .true.
-                        write_refl_eql = .false.
-                        refl_type = "FROZEN     "
-                    end if
-                else if (k == 2) then
-                    if (incident .and. reflected) then
-                        write_incd_frz = .false.
-                        write_incd_eql = .false.
-                        write_refl_frz = .false.
-                        write_refl_eql = .true.
-                        refl_type = "EQUILIBRIUM"
-                    else if (incident) then
-                        write_incd_frz = .true.
-                        write_incd_eql = .false.
-                        incd_type = "FROZEN     "
-                        write_refl_frz = .false.
-                        write_refl_eql = .false.
-                    else
-                        write_incd_frz = .false.
-                        write_incd_eql = .false.
-                        write_refl_frz = .false.
-                        write_refl_eql = .true.
-                        refl_type = "EQUILIBRIUM"
-                    end if
-                else if (k == 3) then
+            ! Branch codes capture solve ordering; output sections are selected
+            ! directly from this code rather than recomputing input flags.
+            select case (branch_codes(k))
+                case (BR_INCD_EQ)
+                    write_incd_eql = .true.
+                    incd_type = "EQUILIBRIUM"
+                case (BR_INCD_EQ_REFL_FRZ)
+                    write_incd_eql = .true.
+                    write_refl_frz = .true.
+                    incd_type = "EQUILIBRIUM"
+                    refl_type = "FROZEN     "
+                case (BR_REFL_EQ_FROM_EQ)
+                    write_refl_eql = .true.
+                    refl_type = "EQUILIBRIUM"
+                case (BR_INCD_FRZ)
                     write_incd_frz = .true.
-                    write_incd_eql = .false.
+                    incd_type = "FROZEN     "
+                case (BR_INCD_FRZ_REFL_FRZ)
+                    write_incd_frz = .true.
+                    write_refl_frz = .true.
                     incd_type = "FROZEN     "
                     refl_type = "FROZEN     "
-                    write_refl_eql = .false.
-                    write_refl_frz = .true.
-                else  ! k == 4
-                    write_incd_frz = .false.
-                    write_incd_eql = .false.
-                    refl_type = "EQUILIBRIUM"
+                case (BR_REFL_EQ_FROM_FRZ)
                     write_refl_eql = .true.
-                    write_refl_frz = .false.
-                end if
+                    refl_type = "EQUILIBRIUM"
+                case (BR_INCD_EQ_REFL_EQ)
+                    write_incd_eql = .true.
+                    write_refl_eql = .true.
+                    incd_type = "EQUILIBRIUM"
+                    refl_type = "EQUILIBRIUM"
+                case default
+                    cycle
+            end select
+
+            have_incident_state = .false.
+            have_reflected_state = .false.
+            do i = 1, m
+                if (solutions(i, 1, k)%eq_soln(2)%T > 0.0d0) have_incident_state = .true.
+                if (solutions(i, 1, k)%eq_soln(3)%T > 0.0d0) have_reflected_state = .true.
+            end do
+            if (.not. have_incident_state) then
+                write_incd_frz = .false.
+                write_incd_eql = .false.
+                write_refl_frz = .false.
+                write_refl_eql = .false.
+            else if (.not. have_reflected_state) then
+                write_refl_frz = .false.
+                write_refl_eql = .false.
             end if
 
             ! -------------------------------------------------------------------
@@ -1028,7 +1083,11 @@ contains
             if (write_incd_eql .or. write_incd_frz) then
                 ! Write the header
                 write(ioout, '(A)') "SHOCK WAVE PARAMETERS ASSUMING"
-                write(ioout, '(A)') "EQUILIBRIUM COMPOSITION FOR INCIDENT SHOCKED CONDITIONS"
+                if (write_incd_eql) then
+                    write(ioout, '(A)') "EQUILIBRIUM COMPOSITION FOR INCIDENT SHOCKED CONDITIONS"
+                else
+                    write(ioout, '(A)') "FROZEN COMPOSITION FOR INCIDENT SHOCKED CONDITIONS"
+                end if
                 write(ioout, '(A)') ""
                 write(ioout, '(A)') "INITIAL GAS (1)"
                 write(ioout, '(A, 14F9.3)') "Mach1            ", (solutions(i, 1, k)%mach(1), i=1,m)
@@ -1083,6 +1142,10 @@ contains
                 write(ioout, '(A, 14F9.3)') "Gamma_s          ", (solutions(i, 1, k)%eq_partials(2)%gamma_s, i=1,m)
                 write(ioout, '(A, 14F9.3)') "Son. Vel., m/s   ", (solutions(i, 1, k)%v_sonic(2), i=1,m)
                 write(ioout, '(A)') ""
+
+                if (prob%output%transport .and. solver%eq_solver%transport) then
+                    call write_shock_transport(ioout, prob, solutions, m, k, 2, write_incd_eql)
+                end if
 
                 ! Write the ratios
                 write(ioout, '(A, 14F9.5)') "P2/P1            ", (solutions(i, 1, k)%p21, i=1,m)
@@ -1177,6 +1240,10 @@ contains
                 write(ioout, '(A, 14F9.3)') "Son. Vel., m/s   ", (solutions(i, 1, k)%v_sonic(3), i=1,m)
                 write(ioout, '(A)') ""
 
+                if (prob%output%transport .and. solver%eq_solver%transport) then
+                    call write_shock_transport(ioout, prob, solutions, m, k, 3, write_refl_eql)
+                end if
+
                 ! Write the ratios
                 write(ioout, '(A, 14F9.5)') "P5/P2            ", (solutions(i, 1, k)%p52, i=1,m)
                 write(ioout, '(A, 14F9.5)') "T5/T2            ", (solutions(i, 1, k)%t52, i=1,m)
@@ -1251,6 +1318,55 @@ contains
 
         end do
 
+    end subroutine
+
+    subroutine write_shock_transport(ioout, prob, solutions, m, k, idx, include_equilibrium)
+        integer, intent(in) :: ioout, m, k, idx
+        type(ProblemDB), intent(in) :: prob
+        type(ShockSolution), intent(in) :: solutions(:, :, :)
+        logical, intent(in) :: include_equilibrium
+        integer :: i
+
+        write(ioout, '(A)') " TRANSPORT PROPERTIES (GASES ONLY)"
+        if (prob%output%siunit) then
+            write(ioout, '(A)') "   CONDUCTIVITY IN UNITS OF MILLIWATTS/(CM)(K)"
+        else
+            write(ioout, '(A)') "   CONDUCTIVITY IN UNITS OF MILLICALORIES/(CM)(K)(SEC)"
+        end if
+        write(ioout, '(A)') ""
+
+        write(ioout, '(A, 14F9.4)') " Visc, Millipoise", (solutions(i, 1, k)%eq_soln(idx)%viscosity, i=1,m)
+        write(ioout, '(A)') ""
+
+        if (include_equilibrium) then
+            write(ioout, '(A)') " WITH EQUILIBRIUM REACTIONS"
+            if (prob%output%siunit) then
+                write(ioout, '(A, 14F9.4)') " Cp, kJ/(kg-K)   ", &
+                    (merge(solutions(i, 1, k)%eq_soln(idx)%cp_eq_transport, solutions(i, 1, k)%eq_soln(idx)%cp_eq, &
+                           solutions(i, 1, k)%eq_soln(idx)%cp_eq_transport > 0.0d0), i=1,m)
+                write(ioout, '(A, 14F9.4)') " Conductivity    ", (solutions(i, 1, k)%eq_soln(idx)%conductivity_eq, i=1,m)
+            else
+                write(ioout, '(A, 14F9.4)') " Cp, cal/(g-K)   ", &
+                    (merge(solutions(i, 1, k)%eq_soln(idx)%cp_eq_transport, solutions(i, 1, k)%eq_soln(idx)%cp_eq, &
+                           solutions(i, 1, k)%eq_soln(idx)%cp_eq_transport > 0.0d0)/4.184d0, i=1,m)
+                write(ioout, '(A, 14F9.4)') " Conductivity    ", &
+                    (solutions(i, 1, k)%eq_soln(idx)%conductivity_eq/4.184d0, i=1,m)
+            end if
+            write(ioout, '(A, 14F9.4)') " Prandtl Number  ", (solutions(i, 1, k)%eq_soln(idx)%Pr_eq, i=1,m)
+            write(ioout, '(A)') ""
+        end if
+
+        write(ioout, '(A)') " WITH FROZEN REACTIONS"
+        if (prob%output%siunit) then
+            write(ioout, '(A, 14F9.4)') " Cp, kJ/(kg-K)   ", (solutions(i, 1, k)%eq_soln(idx)%cp_fr, i=1,m)
+            write(ioout, '(A, 14F9.4)') " Conductivity    ", (solutions(i, 1, k)%eq_soln(idx)%conductivity_fr, i=1,m)
+        else
+            write(ioout, '(A, 14F9.4)') " Cp, cal/(g-K)   ", (solutions(i, 1, k)%eq_soln(idx)%cp_fr/4.184d0, i=1,m)
+            write(ioout, '(A, 14F9.4)') " Conductivity    ", &
+                (solutions(i, 1, k)%eq_soln(idx)%conductivity_fr/4.184d0, i=1,m)
+        end if
+        write(ioout, '(A, 14F9.4)') " Prandtl Number  ", (solutions(i, 1, k)%eq_soln(idx)%Pr_fr, i=1,m)
+        write(ioout, '(A)') ""
     end subroutine
 
     subroutine deton_output(ioout, prob, solver, solutions)
