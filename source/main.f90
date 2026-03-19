@@ -6,7 +6,8 @@ program cea
     use cea_transport, only: TransportDB, read_transport
     use cea_input, only: ProblemDB, read_input
     use cea_equilibrium, only: EqSolver, EqSolution, EqPartials
-    use cea_rocket, only: RocketSolver, RocketSolution
+    use cea_rocket, only: RocketSolver, RocketSolution, &
+                          rocket_status_partial, rocket_warning_condensed_temp_range
     use cea_shock, only: ShockSolver, ShockSolution
     use cea_detonation, only: DetonSolver, DetonSolution
     use cea_db_compile, only: compile_thermo_database, compile_transport_database
@@ -400,7 +401,7 @@ contains
         real(dp), allocatable :: weights(:)
         integer :: i, j, k, num_pc, num_of
         real(dp) :: pc, hc
-        real(dp), allocatable :: tc, tc_est, mdot, ac_at
+        real(dp) :: tc, tc_est, mdot, ac_at
         real(dp), allocatable :: subar(:), supar(:), pi_p(:)
         logical :: fac, frz, eql, need_hc
         integer :: nfrz
@@ -408,6 +409,12 @@ contains
 
         ! Initialize
         need_hc = .false.
+        hc = empty_dp
+        tc = empty_dp
+        tc_est = empty_dp
+        mdot = empty_dp
+        ac_at = empty_dp
+        allocate(pi_p(0), subar(0), supar(0))
 
         ! Get the reactants Mixture object
         reactants = Mixture(thermo, input_reactants=prob%reactants, ions=prob%problem%include_ions)
@@ -439,7 +446,7 @@ contains
         end if
 
         ! Get the rocket variables
-        pi_p = prob%problem%pcp_schedule%values
+        if (allocated(prob%problem%pcp_schedule)) pi_p = prob%problem%pcp_schedule%values
         if (allocated(prob%problem%subar_schedule)) subar = prob%problem%subar_schedule%values
         if (allocated(prob%problem%supar_schedule)) supar = prob%problem%supar_schedule%values
         if (allocated(prob%problem%mdot)) mdot = prob%problem%mdot
@@ -1907,7 +1914,8 @@ contains
 
         do k = 1, size(solutions, 3)  ! Loop over o/f ratio
 
-            ! Legacy-style section headers to align major output structure with CEA2.
+            ! Use the established section headers so the major output
+            ! structure stays aligned with the rest of the report.
             select case(prob%problem%type)
                 case ("hp")
                     section_title = "THERMODYNAMIC EQUILIBRIUM COMBUSTION PROPERTIES AT ASSIGNED"
@@ -2253,6 +2261,9 @@ contains
 
                     ! Get the number of stations ("np"), and the number of exit stations ("ne")
                     np = solutions(i,j,k)%num_pts
+                    if (solutions(i,j,k)%last_completed_idx > 0) then
+                        np = min(np, solutions(i,j,k)%last_completed_idx)
+                    end if
 
                     ! Remove the solution at "inifnity" if this is an FAC problem
                     if (prob%problem%rkt_finite_area) then
@@ -2418,21 +2429,21 @@ contains
                         write(ioout, thermo_fmt) " Visc, Millipoise", (solutions(i, j, k)%eq_soln(idx)%viscosity, idx=1,np)
                         write(ioout, *) ""
 
-                        ! Equilibrium properies
-                        write(ioout, '(A)') " WITH EQUILIBRIUM REACTIONS"
-                        if (prob%output%siunit) then
-                            write(ioout, thermo_fmt) " Cp, kJ/(kg-K)   ", (solutions(i, j, k)%eq_soln(idx)%cp_eq, idx=1,np)
-                            write(ioout, thermo_fmt) " Conductivity    ", &
-                                (solutions(i, j, k)%eq_soln(idx)%conductivity_eq, idx=1,np)
-                        else
-                            write(ioout, thermo_fmt) " Cp, cal/(g-K)   ", (solutions(i, j, k)%eq_soln(idx)%cp_eq/4.184d0, idx=1,np)
-                            write(ioout, thermo_fmt) " Conductivity    ", &
-                                (solutions(i, j, k)%eq_soln(idx)%conductivity_eq/4.184d0, idx=1,np)
+                        if (.not. frozen) then
+                            write(ioout, '(A)') " WITH EQUILIBRIUM REACTIONS"
+                            if (prob%output%siunit) then
+                                write(ioout, thermo_fmt) " Cp, kJ/(kg-K)   ", (solutions(i, j, k)%eq_soln(idx)%cp_eq, idx=1,np)
+                                write(ioout, thermo_fmt) " Conductivity    ", &
+                                    (solutions(i, j, k)%eq_soln(idx)%conductivity_eq, idx=1,np)
+                            else
+                                write(ioout, thermo_fmt) " Cp, cal/(g-K)   ", (solutions(i, j, k)%eq_soln(idx)%cp_eq/4.184d0, idx=1,np)
+                                write(ioout, thermo_fmt) " Conductivity    ", &
+                                    (solutions(i, j, k)%eq_soln(idx)%conductivity_eq/4.184d0, idx=1,np)
+                            end if
+                            write(ioout, thermo_fmt) " Prandtl Number  ", (solutions(i, j, k)%eq_soln(idx)%Pr_eq, idx=1,np)
+                            write(ioout, *) ""
                         end if
-                        write(ioout, thermo_fmt) " Prandtl Number  ", (solutions(i, j, k)%eq_soln(idx)%Pr_eq, idx=1,np)
-                        write(ioout, *) ""
 
-                        ! Frozen properties
                         write(ioout, '(A)') " WITH FROZEN REACTIONS"
                         if (prob%output%siunit) then
                             write(ioout, thermo_fmt) " Cp, kJ/(kg-K)   ", (solutions(i, j, k)%eq_soln(idx)%cp_fr, idx=1,np)
@@ -2449,45 +2460,47 @@ contains
                     end if
 
                     ! Print the performance parameters
-                    write(ioout, *) ""
-                    write(ioout, '(A)') " PERFORMANCE PARAMETERS"
-                    write(ioout, *) ""
+                    if (np > 1) then
+                        write(ioout, *) ""
+                        write(ioout, '(A)') " PERFORMANCE PARAMETERS"
+                        write(ioout, *) ""
 
-                    perf_label = 'Ae/At           '
-                    write(perf_fmt, '("(",i0,"(F13.4))")') np-1
-                    write(ioout, '(1x,A,1x,A13)', advance='no') perf_label, ''
-                    write(ioout, trim(perf_fmt)) (solutions(i, j, k)%ae_at(idx), idx=2,np)
-                    if (prob%output%siunit) then
-                        perf_label = 'C*, m/s         '
-                        write(perf_fmt, '("(",i0,"(F13.2))")') np-1
+                        perf_label = 'Ae/At           '
+                        write(perf_fmt, '("(",i0,"(F13.4))")') np-1
                         write(ioout, '(1x,A,1x,A13)', advance='no') perf_label, ''
-                        write(ioout, trim(perf_fmt)) (solutions(i, j, k)%c_star(idx), idx=2,np)
-                    else
-                        perf_label = 'C*, ft/s        '
-                        write(perf_fmt, '("(",i0,"(F13.2))")') np-1
+                        write(ioout, trim(perf_fmt)) (solutions(i, j, k)%ae_at(idx), idx=2,np)
+                        if (prob%output%siunit) then
+                            perf_label = 'C*, m/s         '
+                            write(perf_fmt, '("(",i0,"(F13.2))")') np-1
+                            write(ioout, '(1x,A,1x,A13)', advance='no') perf_label, ''
+                            write(ioout, trim(perf_fmt)) (solutions(i, j, k)%c_star(idx), idx=2,np)
+                        else
+                            perf_label = 'C*, ft/s        '
+                            write(perf_fmt, '("(",i0,"(F13.2))")') np-1
+                            write(ioout, '(1x,A,1x,A13)', advance='no') perf_label, ''
+                            write(ioout, trim(perf_fmt)) (solutions(i, j, k)%c_star(idx)*3.2808349d0, idx=2,np)
+                        end if
+                        perf_label = 'Cf              '
+                        write(perf_fmt, '("(",i0,"(F13.4))")') np-1
                         write(ioout, '(1x,A,1x,A13)', advance='no') perf_label, ''
-                        write(ioout, trim(perf_fmt)) (solutions(i, j, k)%c_star(idx)*3.2808349d0, idx=2,np)
-                    end if
-                    perf_label = 'Cf              '
-                    write(perf_fmt, '("(",i0,"(F13.4))")') np-1
-                    write(ioout, '(1x,A,1x,A13)', advance='no') perf_label, ''
-                    write(ioout, trim(perf_fmt)) (solutions(i, j, k)%cf(idx), idx=2,np)
-                    if (prob%output%siunit) then
-                        perf_label = 'Ivac, m/s       '
-                        write(perf_fmt, '("(",i0,"(F13.2))")') np-1
-                        write(ioout, '(1x,A,1x,A13)', advance='no') perf_label, ''
-                        write(ioout, trim(perf_fmt)) (solutions(i, j, k)%i_vac(idx), idx=2,np)
-                        perf_label = 'Isp, m/s        '
-                        write(ioout, '(1x,A,1x,A13)', advance='no') perf_label, ''
-                        write(ioout, trim(perf_fmt)) (solutions(i, j, k)%i_sp(idx), idx=2,np)
-                    else
-                        perf_label = 'Ivac, lb-s/lb   '
-                        write(perf_fmt, '("(",i0,"(F13.2))")') np-1
-                        write(ioout, '(1x,A,1x,A13)', advance='no') perf_label, ''
-                        write(ioout, trim(perf_fmt)) (solutions(i, j, k)%i_vac(idx)/9.80665d0, idx=2,np)
-                        perf_label = 'Isp, lb-s/lb    '
-                        write(ioout, '(1x,A,1x,A13)', advance='no') perf_label, ''
-                        write(ioout, trim(perf_fmt)) (solutions(i, j, k)%i_sp(idx)/9.80665d0, idx=2,np)
+                        write(ioout, trim(perf_fmt)) (solutions(i, j, k)%cf(idx), idx=2,np)
+                        if (prob%output%siunit) then
+                            perf_label = 'Ivac, m/s       '
+                            write(perf_fmt, '("(",i0,"(F13.2))")') np-1
+                            write(ioout, '(1x,A,1x,A13)', advance='no') perf_label, ''
+                            write(ioout, trim(perf_fmt)) (solutions(i, j, k)%i_vac(idx), idx=2,np)
+                            perf_label = 'Isp, m/s        '
+                            write(ioout, '(1x,A,1x,A13)', advance='no') perf_label, ''
+                            write(ioout, trim(perf_fmt)) (solutions(i, j, k)%i_sp(idx), idx=2,np)
+                        else
+                            perf_label = 'Ivac, lb-s/lb   '
+                            write(perf_fmt, '("(",i0,"(F13.2))")') np-1
+                            write(ioout, '(1x,A,1x,A13)', advance='no') perf_label, ''
+                            write(ioout, trim(perf_fmt)) (solutions(i, j, k)%i_vac(idx)/9.80665d0, idx=2,np)
+                            perf_label = 'Isp, lb-s/lb    '
+                            write(ioout, '(1x,A,1x,A13)', advance='no') perf_label, ''
+                            write(ioout, trim(perf_fmt)) (solutions(i, j, k)%i_sp(idx)/9.80665d0, idx=2,np)
+                        end if
                     end if
 
                     ! Set the trace output value
@@ -2555,15 +2568,18 @@ contains
                     write(ioout, '(A)') "PRODUCTS WHICH WERE CONSIDERED BUT WHOSE "// mass_or_mole //" FRACTIONS"
                     write(ioout, '(A, 1PE13.6 ,A)') "WERE LESS THAN", trace, " FOR ALL ASSIGNED CONDITIONS"
                     write(ioout, '(A)') ""
-                    ncols = 5
-                    nrows = (num_trace-1)/ncols + 1
-                    do ii = 1, nrows
-                        last_row_cols = merge(mod(num_trace, ncols), ncols, mod(num_trace, ncols) /= 0 .and. ii == nrows)
-                        write(ioout, '(5A16)') (trace_names((ii-1)*ncols + jj), jj=1,last_row_cols)
-                    end do
+                    if (num_trace > 0) then
+                        ncols = 5
+                        nrows = (num_trace-1)/ncols + 1
+                        do ii = 1, nrows
+                            last_row_cols = merge(mod(num_trace, ncols), ncols, mod(num_trace, ncols) /= 0 .and. ii == nrows)
+                            write(ioout, '(5A16)') (trace_names((ii-1)*ncols + jj), jj=1,last_row_cols)
+                        end do
+                    end if
                     write(ioout, '(A)') ""
                     write(ioout, '(A)') "NOTE. WEIGHT FRACTION OF FUEL IN TOTAL FUELS AND OF OXIDANT IN TOTAL OXIDANTS"
                     write(ioout, '(A)') ""
+                    call write_rocket_legacy_warning(ioout, solutions(i,j,k))
 
                     ! Write out the additional exit conditions if any are in overflow
                     if (exit_extra > 0) then
@@ -2699,31 +2715,31 @@ contains
                             write(ioout, '(F13.3)') (solutions(i, j, k)%eq_soln(idx)%viscosity, idx=x,y)
                             write(ioout, *) ""
 
-                            ! Equilibrium properies
-                            write(ioout, '(A)') " WITH EQUILIBRIUM REACTIONS"
-                            if (prob%output%siunit) then
-                                write(ioout, '(A, F13.4)', advance="no") " Cp, kJ/(kg-K)   ", &
-                                    (solutions(i, j, k)%eq_soln(idx)%cp_eq, idx=1,nc)
-                                write(ioout, '(F13.4)') (solutions(i, j, k)%eq_soln(idx)%cp_eq, idx=x,y)
+                            if (.not. frozen) then
+                                write(ioout, '(A)') " WITH EQUILIBRIUM REACTIONS"
+                                if (prob%output%siunit) then
+                                    write(ioout, '(A, F13.4)', advance="no") " Cp, kJ/(kg-K)   ", &
+                                        (solutions(i, j, k)%eq_soln(idx)%cp_eq, idx=1,nc)
+                                    write(ioout, '(F13.4)') (solutions(i, j, k)%eq_soln(idx)%cp_eq, idx=x,y)
 
-                                write(ioout, '(A, F13.3)', advance="no") " Conductivity    ", &
-                                    (solutions(i, j, k)%eq_soln(idx)%conductivity_eq, idx=1,nc)
-                                write(ioout, '(F13.3)') (solutions(i, j, k)%eq_soln(idx)%conductivity_eq, idx=x,y)
-                            else
-                                write(ioout, '(A, F13.4)', advance="no") " Cp, cal/(g-K)   ", &
-                                    (solutions(i, j, k)%eq_soln(idx)%cp_eq/4.184d0, idx=1,nc)
-                                write(ioout, '(F13.4)') (solutions(i, j, k)%eq_soln(idx)%cp_eq/4.184d0, idx=x,y)
+                                    write(ioout, '(A, F13.3)', advance="no") " Conductivity    ", &
+                                        (solutions(i, j, k)%eq_soln(idx)%conductivity_eq, idx=1,nc)
+                                    write(ioout, '(F13.3)') (solutions(i, j, k)%eq_soln(idx)%conductivity_eq, idx=x,y)
+                                else
+                                    write(ioout, '(A, F13.4)', advance="no") " Cp, cal/(g-K)   ", &
+                                        (solutions(i, j, k)%eq_soln(idx)%cp_eq/4.184d0, idx=1,nc)
+                                    write(ioout, '(F13.4)') (solutions(i, j, k)%eq_soln(idx)%cp_eq/4.184d0, idx=x,y)
 
-                                write(ioout, '(A, F13.3)', advance="no") " Conductivity    ", &
-                                    (solutions(i, j, k)%eq_soln(idx)%conductivity_eq/4.184d0, idx=1,nc)
-                                write(ioout, '(F13.3)') (solutions(i, j, k)%eq_soln(idx)%conductivity_eq/4.184d0, idx=x,y)
+                                    write(ioout, '(A, F13.3)', advance="no") " Conductivity    ", &
+                                        (solutions(i, j, k)%eq_soln(idx)%conductivity_eq/4.184d0, idx=1,nc)
+                                    write(ioout, '(F13.3)') (solutions(i, j, k)%eq_soln(idx)%conductivity_eq/4.184d0, idx=x,y)
+                                end if
+                                write(ioout, '(A, F13.4)', advance="no") " Prandtl Number  ", &
+                                    (solutions(i, j, k)%eq_soln(idx)%Pr_eq, idx=1,nc)
+                                write(ioout, '(F13.4)') (solutions(i, j, k)%eq_soln(idx)%Pr_eq, idx=x,y)
+                                write(ioout, *) ""
                             end if
-                            write(ioout, '(A, F13.4)', advance="no") " Prandtl Number  ", &
-                                (solutions(i, j, k)%eq_soln(idx)%Pr_eq, idx=1,nc)
-                            write(ioout, '(F13.4)') (solutions(i, j, k)%eq_soln(idx)%Pr_eq, idx=x,y)
-                            write(ioout, *) ""
 
-                            ! Frozen properties
                             write(ioout, '(A)') " WITH FROZEN REACTIONS"
                             if (prob%output%siunit) then
                                 write(ioout, '(A, F13.4)', advance="no") " Cp, kJ/(kg-K)   ", &
@@ -2866,6 +2882,20 @@ contains
 
     end subroutine
 
+    subroutine write_rocket_legacy_warning(ioout, solution)
+        integer, intent(in) :: ioout
+        type(RocketSolution), intent(in) :: solution
+
+        if (solution%status_code /= rocket_status_partial) return
+
+        select case (solution%warning_code)
+            case (rocket_warning_condensed_temp_range)
+                write(ioout, '(A)') " WARNING!!  CALCULATIONS WERE STOPPED BECAUSE NEXT POINT IS MORE"
+                write(ioout, '(A)') " THAN 50 K BELOW THE TEMPERATURE RANGE OF A CONDENSED SPECIES (ROCKET)"
+                write(ioout, '(A)') ""
+        end select
+    end subroutine
+
     subroutine compute_fuel_ratios(prob, reactants, idx, of_ratio, pct_fuel, r_eq, phi_eq)
         ! Compute all of the fuel ratio values (o/f ratio, % fuel, r eq. ratio, phi eq. ratio) at once
 
@@ -2883,9 +2913,13 @@ contains
         real(dp) :: ratio_val
         real(dp), allocatable :: fuel_moles(:), oxidant_moles(:)
         real(dp), allocatable :: fuel_weights(:), oxidant_weights(:)
+        real(dp), allocatable :: vm(:), vp(:), b0_ox(:), b0_fu(:)
+        real(dp) :: vm_fu, vp_fu, vm_ox, vp_ox
 
         allocate(fuel_moles(reactants%num_species), oxidant_moles(reactants%num_species), &
-                 fuel_weights(reactants%num_species), oxidant_weights(reactants%num_species))
+                 fuel_weights(reactants%num_species), oxidant_weights(reactants%num_species), &
+                 vm(reactants%num_elements), vp(reactants%num_elements), &
+                 b0_ox(reactants%num_elements), b0_fu(reactants%num_elements))
 
         fuel_weights = 0.0d0
         oxidant_weights = 0.0d0
@@ -2991,6 +3025,24 @@ contains
 
                 end select
 
+            end if
+
+            if (sum(fuel_weights) > 0.0d0 .and. sum(oxidant_weights) > 0.0d0 .and. of_ratio > 0.0d0) then
+                call reactants%get_valence(vm, vp)
+                b0_ox = reactants%element_amounts_from_weights(oxidant_weights)
+                b0_fu = reactants%element_amounts_from_weights(fuel_weights)
+
+                vm_ox = dot_product(vm, b0_ox)
+                vp_ox = dot_product(vp, b0_ox)
+                vm_fu = dot_product(vm, b0_fu)
+                vp_fu = dot_product(vp, b0_fu)
+
+                if (abs(vm_ox + vp_ox) > tiny(1.0d0)) then
+                    phi_eq = reactants%phi_from_of(oxidant_weights, fuel_weights, of_ratio)
+                end if
+                if (abs(vm_fu + vm_ox*of_ratio) > tiny(1.0d0)) then
+                    r_eq = reactants%equivalence_from_of(oxidant_weights, fuel_weights, of_ratio)
+                end if
             end if
 
         end if
