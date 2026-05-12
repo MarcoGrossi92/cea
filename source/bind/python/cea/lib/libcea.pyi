@@ -385,6 +385,32 @@ class EqSolution:
     def converged(self) -> bool: ...
 
 
+def eq_solve(
+    eq_type: int,
+    reactants: list[str],
+    T: float | None = None,
+    H: float | None = None,
+    S: float | None = None,
+    U: float | None = None,
+    P: float | None = None,
+    V: float | None = None,
+    T_reac: SupportsFloat | VectorLike | None = None,
+    fuel_amounts: VectorLike | None = None,
+    oxid_amounts: VectorLike | None = None,
+    moles: bool = False,
+    of_ratio: SupportsFloat | VectorLike | None = None,
+    phi: SupportsFloat | VectorLike | None = None,
+    r_eq: SupportsFloat | VectorLike | None = None,
+    pct_fuel: SupportsFloat | VectorLike | None = None,
+    only: list[str] | None = None,
+    omit: list[str] | None = None,
+    insert: list[str] | None = None,
+    trace: float | None = None,
+    transport: bool = False,
+    ions: bool = False,
+) -> EqSolution: ...
+
+
 class EqDerivatives:
     last_error: int
     def __init__(self, solver: EqSolver, solution: EqSolution) -> None: ...
@@ -869,33 +895,6 @@ class DetonationSolution:
     def mole_fractions(self) -> dict[str, float]: ...
     @property
     def converged(self) -> bool: ...
-
-
-def eq_solve(
-    eq_type: int,
-    reactants: list[str],
-    T: float | None = None,
-    H: float | None = None,
-    S: float | None = None,
-    U: float | None = None,
-    P: float | None = None,
-    V: float | None = None,
-    T_reac: SupportsFloat | VectorLike | None = None,
-    fuel_amounts: VectorLike | None = None,
-    oxid_amounts: VectorLike | None = None,
-    moles: bool = False,
-    of_ratio: SupportsFloat | VectorLike | None = None,
-    phi: SupportsFloat | VectorLike | None = None,
-    r_eq: SupportsFloat | VectorLike | None = None,
-    pct_fuel: SupportsFloat | VectorLike | None = None,
-    only: list[str] | None = None,
-    omit: list[str] | None = None,
-    insert: list[str] | None = None,
-    trace: float | None = None,
-    transport: bool = False,
-    ions: bool = False,
-) -> EqSolution: ...
-
 
 __all__: list[str]
 def __getattr__(name: str) -> Any: ...

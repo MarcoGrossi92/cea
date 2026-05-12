@@ -1,5 +1,5 @@
-Python Interface
-****************
+Python
+******
 
 The Python API provides a convenient way to interact with the program through Python, while maintaining the performance of the underlying Fortran code.
 No unit conversions are performed by default; inputs and outputs are in the documented CEA units, and users are responsible for converting as needed.

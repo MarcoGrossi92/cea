@@ -98,7 +98,8 @@ Fortran + C (no Python bindings):
     cmake --install build-core-c
 
 If you are not using presets, set `-DCEA_ENABLE_BIND_PYTHON=OFF` and also disable
-the MATLAB wrapper (it forces Python on). For Fortran-only, also set
+the MATLAB compatibility option (`CEA_ENABLE_BIND_MATLAB`, which forces Python on).
+For Fortran-only, also set
 `-DCEA_ENABLE_BIND_C=OFF`.
 
 ### Python Binding from a Source Checkout
@@ -122,6 +123,12 @@ with:
 
 The Python binding to CEA has been successfully compiled and executed on macOS,
 Linux, and Windows systems.
+
+MATLAB callers should use MATLAB's Python bridge with the installed Python
+package namespace rather than a separate compiled MATLAB extension. Import
+`cea` for constants/units and `cea.matlab` for the MATLAB-oriented wrapper
+entry points `eq_solve`, `rocket_solve`, `shock_solve`, and
+`detonation_solve`. Sample scripts live under `source/bind/matlab/samples/`.
 
 ## Examples
 

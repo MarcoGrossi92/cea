@@ -1,7 +1,10 @@
 option(CEA_ENABLE_BIND_C      "Enable C language bindings"       ON)
 option(CEA_ENABLE_BIND_CXX    "Enable C++ language bindings"     OFF)
 option(CEA_ENABLE_BIND_PYTHON "Enable Python language bindings"  ON)
-option(CEA_ENABLE_BIND_MATLAB "Enable MatLab language bindings"  ON)
+option(CEA_ENABLE_BIND_MATLAB
+    "Enable MATLAB compatibility mode (forces Python bindings ON)"
+    ON
+)
 option(CEA_ENABLE_BIND_EXCEL  "Enable Excel language bindings"   ON)
 
 if (CEA_ENABLE_BIND_MATLAB)
@@ -88,43 +91,3 @@ if (CEA_ENABLE_BIND_PYTHON)
     # rest of the pure python package files handled by pip & scikit-build-core
 
 endif()
-
-#=====================================================================
-# Matlab Bindings
-#=====================================================================
-# if (CEA_ENABLE_BIND_MATLAB)
-
-#     find_package(PythonExtensions REQUIRED)
-#     find_package(NumPy REQUIRED)
-#     find_package(Cython REQUIRED)
-
-#     execute_process(
-#         COMMAND "${PYTHON_EXECUTABLE}"
-#         -c "import numpy; print(numpy.get_include())"
-#         OUTPUT_VARIABLE NumPy_INCLUDE_DIRS
-#         OUTPUT_STRIP_TRAILING_WHITESPACE
-#     )
-
-#     include_directories(matlab)
-
-#     add_cython_target(cea_matlab cea_matlab.pyx)
-#     add_library(cea_matlab MODULE ${cea_matlab})
-#     python_extension_module(cea_matlab)
-
-#     # Ensure proper linking on Windows
-#     if (WIN32)
-#         set_target_properties(cea_matlab PROPERTIES
-#             WINDOWS_EXPORT_ALL_SYMBOLS ON
-#             PREFIX ""
-#         )
-#         target_link_libraries(cea_matlab ${PYTHON_LIBRARIES})
-#     endif()
-
-#     target_link_libraries(cea_matlab cea::bindc)
-#     target_include_directories(cea_matlab PUBLIC
-#         ${PYTHON_INCLUDE_DIRS}
-#         ${NumPy_INCLUDE_DIRS}
-#         c)
-#     install(TARGETS cea_matlab DESTINATION cea_matlab)
-
-# endif()

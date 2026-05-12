@@ -4874,8 +4874,6 @@ def eq_solve(cea_equilibrium_type eq_type,
         If T_reac length doesn't match reactants, or invalid parameter combinations
     """
 
-    cdef cea_err ierr
-
     omit_list = [] if omit is None else omit
     insert_list = [] if insert is None else insert
     only_list = [] if only is None else only
@@ -4980,7 +4978,6 @@ def eq_solve(cea_equilibrium_type eq_type,
     solver.solve(soln, eq_type, state1, state2, weights)
 
     return soln
-
 
 # Public API: export non-underscore names, excluding helper modules/types.
 _public_exclude = {"cython", "ctypes", "array", "warnings", "np", "Optional"}

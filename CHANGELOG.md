@@ -5,10 +5,21 @@ All notable user-visible changes to this project are documented here.
 ## [Unreleased]
 
 ### Changed
+- Python `cea.eq_solve` remains a deprecated compatibility shim, but now
+  returns the legacy object-based `EqSolution` result again via the compiled
+  binding instead of forwarding to the MATLAB wrapper.
+- MATLAB-facing docs now point to the Python package namespace instead of an
+  active separate MATLAB extension.
 
 ### Fixed
 
 ### Added
+- Added a pure-Python `cea.matlab` module with a Matlab-oriented `eq_solve`
+  entry point that returns a flat Python namespace of scalars, arrays, and
+  dictionaries.
+- Added Matlab-oriented `cea.matlab.rocket_solve`, `shock_solve`, and
+  `detonation_solve` wrapper entry points, plus MATLAB sample scripts and
+  docs for those problem types.
 
 ## [3.2.0] - 2026-05-12
 
