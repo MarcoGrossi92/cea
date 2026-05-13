@@ -18,7 +18,7 @@ rtol = 1e-2  # Relative acceptance tolerance for all values
 round_vals = True  # Attempt to round the test values to the precision of the reference value
 test_names = [
     "example1", "example2", "example3", "example4", "example5", "example14",   # Equilibrium problems
-    "example8", "example9", "example10", "example11", "example12", "example13", # Rocket problems
+    "example8", "example9", "example10", "example11", "example12", "example13", "example15", # Rocket problems
     "example7",  # Shock problem
     "example6"   # Deton problem
     ]

@@ -1,0 +1,17 @@
+ problem case=Prop_P120C_all rocket eq
+
+
+     p(bar)= 5.00
+
+
+ reac
+      name= A   wt%=67.000              H  4.0000  O  4.0000  N  1.0000  CL 1.0000  h,cal= -70690.0
+      name= B   wt%=20.000                                               AL 1.0000  h,cal=      0.0
+      name= C   wt%=13.000   C  7.2913  H 11.0192  O  0.0823                        h,cal=    500.0
+
+#A = Ammonium Perchlorate
+#B = Aluminum
+#C = HTPB RV4
+
+ output si massf trans
+ end
