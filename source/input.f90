@@ -612,18 +612,23 @@ contains
         character(:), allocatable :: tok
         integer :: l
 
-        tok = to_upper(trim(token))
+        tok = trim(token)
         l = len_trim(tok)
         if (l < 1 .or. l > 2) then
             tf = .false.
             return
         end if
+        ! First character must be given as an uppercase letter (CEA2 convention);
+        ! lowercase leading characters (c, h, cl, fe) are not element symbols.
         if (.not. (tok(1:1) >= 'A' .and. tok(1:1) <= 'Z')) then
             tf = .false.
             return
         end if
+        ! Second character of a two-letter symbol may be given in either case,
+        ! e.g. both Cl and CL are accepted; it is upper-cased when stored.
         if (l == 2) then
-            tf = (tok(2:2) >= 'A' .and. tok(2:2) <= 'Z')
+            tf = (tok(2:2) >= 'A' .and. tok(2:2) <= 'Z') .or. &
+                 (tok(2:2) >= 'a' .and. tok(2:2) <= 'z')
         else
             tf = .true.
         end if
