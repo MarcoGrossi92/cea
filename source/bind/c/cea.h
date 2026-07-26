@@ -125,6 +125,10 @@ extern "C"
   // Logging Control
   cea_err cea_set_log_level(const cea_log_level level);
 
+  // Last recovered fatal error message for the current thread
+  cea_err cea_last_error_message_len(cea_int *message_len);
+  cea_err cea_last_error_message_buf(char *message, const cea_int buf_len);
+
   // Initialization (not thread safe)
   cea_err cea_init();
   cea_err cea_init_thermo(const cea_string thermofile);
@@ -262,6 +266,22 @@ extern "C"
       const cea_real fuel_weights[],
       const cea_real weight_eq_ratio,
       cea_real *of_ratio);
+
+  cea_err cea_mixture_of_ratio_to_chem_eq_ratio(
+      const cea_mixture mix,
+      const cea_int len,
+      const cea_real oxidant_weights[],
+      const cea_real fuel_weights[],
+      const cea_real of_ratio,
+      cea_real *chem_eq_ratio);
+
+  cea_err cea_mixture_of_ratio_to_weight_eq_ratio(
+      const cea_mixture mix,
+      const cea_int len,
+      const cea_real oxidant_weights[],
+      const cea_real fuel_weights[],
+      const cea_real of_ratio,
+      cea_real *weight_eq_ratio);
 
   cea_err cea_mixture_of_ratio_to_weights(
       const cea_mixture mix,

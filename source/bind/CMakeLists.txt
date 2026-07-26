@@ -5,7 +5,7 @@ option(CEA_ENABLE_BIND_MATLAB
     "Enable MATLAB compatibility mode (forces Python bindings ON)"
     ON
 )
-option(CEA_ENABLE_BIND_EXCEL  "Enable Excel language bindings"   ON)
+option(CEA_ENABLE_BIND_EXCEL  "Enable Excel language bindings"   OFF)
 
 if (CEA_ENABLE_BIND_MATLAB)
     set(CEA_ENABLE_BIND_PYTHON ON CACHE BOOL "Enable Python language bindings" FORCE)
@@ -14,13 +14,21 @@ endif()
 if (CEA_ENABLE_BIND_CXX OR
     CEA_ENABLE_BIND_PYTHON OR
     CEA_ENABLE_BIND_MATLAB OR
-    CEA_ENABLE_BIND_EXCEL)
+    (WIN32 AND CEA_ENABLE_BIND_EXCEL))
     set(CEA_ENABLE_BIND_C ON CACHE BOOL "Enable C language bindings" FORCE)
 endif()
 
 if (CEA_ENABLE_BIND_C)
     enable_language(C)
     add_subdirectory(c)
+endif()
+
+if (CEA_ENABLE_BIND_EXCEL)
+    if (WIN32)
+        add_subdirectory(excel)
+    else()
+        message(WARNING "CEA Excel wrapper is supported on 64-bit Windows only; skipping Excel binding.")
+    endif()
 endif()
 
 #=====================================================================
@@ -62,7 +70,6 @@ if (CEA_ENABLE_BIND_PYTHON)
         # default if using ifc
         if (CMAKE_C_COMPILER_ID STREQUAL "IntelLLVM" OR CMAKE_C_COMPILER_ID STREQUAL "Intel")
             target_compile_options(libcea PUBLIC "-D__INTEL_COMPILER")
-            target_link_options(libcea PUBLIC "/static")
         endif()
     endif()
 
@@ -82,8 +89,14 @@ if (CEA_ENABLE_BIND_PYTHON)
         add_dependencies(libcea compile_databases)
     endif()
     # the compiled library
-    install(TARGETS libcea DESTINATION lib)
-    install(TARGETS cea_bindc DESTINATION lib)
+    install(TARGETS libcea
+        RUNTIME DESTINATION lib
+        LIBRARY DESTINATION lib
+    )
+    install(TARGETS cea_bindc
+        RUNTIME DESTINATION lib
+        LIBRARY DESTINATION lib
+    )
     # default data files (compiled during build)
     install(FILES ${CMAKE_BINARY_DIR}/thermo.lib DESTINATION data)
     install(FILES ${CMAKE_BINARY_DIR}/trans.lib DESTINATION data)
