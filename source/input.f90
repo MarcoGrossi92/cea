@@ -620,12 +620,17 @@ contains
             tf = .false.
             return
         end if
+        ! First character must be given as an uppercase letter (CEA2 convention);
+        ! lowercase leading characters (c, h, cl, fe) are not element symbols.
         if (.not. (tok(1:1) >= 'A' .and. tok(1:1) <= 'Z')) then
             tf = .false.
             return
         end if
+        ! Second character of a two-letter symbol may be given in either case,
+        ! e.g. both Cl and CL are accepted; it is upper-cased when stored.
         if (l == 2) then
-            tf = (tok(2:2) >= 'a' .and. tok(2:2) <= 'z')
+            tf = (tok(2:2) >= 'A' .and. tok(2:2) <= 'Z') .or. &
+                 (tok(2:2) >= 'a' .and. tok(2:2) <= 'z')
         else
             tf = .true.
         end if
@@ -794,15 +799,17 @@ contains
         integer :: i, n, ierr
         real(dp) :: val
         character(:), allocatable :: word
+        character(:), allocatable :: element
 
         allocate(f%elements(max_values))
         allocate(f%coefficients(max_values))
 
         n = 1
-        if (len_trim(token) > en) then
+        element = to_upper(trim(token))
+        if (len_trim(element) > en) then
             call abort('parse_formula: element symbol too long: '//trim(token))
         end if
-        f%elements(n) = token
+        f%elements(n) = element
         f%coefficients(n) = 1.0d0
         val = scanner%peek_real(ierr)
         if (ierr == 0) f%coefficients(n) = scanner%read_real(ierr)
@@ -810,20 +817,17 @@ contains
         do i = 2,size(f%elements)
             word = scanner%peek_word(ierr)
             if (ierr /= 0) exit  ! Buffer empty
-            select case(word(1:1))
-                case('A':'Z')
-                    word = scanner%read_word()
-                    if (len_trim(word) > en) then
-                        call abort('parse_formula: element symbol too long: '//trim(word))
-                    end if
-                    f%elements(i) = word
-                    f%coefficients(i) = 1.0d0
-                    val = scanner%peek_real(ierr)
-                    if (ierr == 0) f%coefficients(i) = scanner%read_real(ierr)
-                    n = i
-                case default
-                    exit  ! Start of new keyword
-            end select
+            if (.not. is_formula_element_token(word)) exit  ! Start of new keyword
+            word = scanner%read_word()
+            word = to_upper(trim(word))
+            if (len_trim(word) > en) then
+                call abort('parse_formula: element symbol too long: '//trim(word))
+            end if
+            f%elements(i) = word
+            f%coefficients(i) = 1.0d0
+            val = scanner%peek_real(ierr)
+            if (ierr == 0) f%coefficients(i) = scanner%read_real(ierr)
+            n = i
         end do
 
         f%elements = f%elements(:n)
@@ -962,6 +966,20 @@ contains
             code = iachar(out(i:i))
             if (code >= iachar('A') .and. code <= iachar('Z')) then
                 out(i:i) = achar(code + 32)
+            end if
+        end do
+    end function
+
+    function to_upper(txt) result(out)
+        character(*), intent(in) :: txt
+        character(:), allocatable :: out
+        integer :: i, code
+
+        out = txt
+        do i = 1, len(out)
+            code = iachar(out(i:i))
+            if (code >= iachar('a') .and. code <= iachar('z')) then
+                out(i:i) = achar(code - 32)
             end if
         end do
     end function
