@@ -10,6 +10,19 @@ All notable user-visible changes to this project are documented here.
 
 ### Added
 
+## [3.3.1] - 2026-07-29
+
+### Changed
+
+### Fixed
+- Frozen rocket calculations now switch from equilibrium to frozen composition
+  after `n_frz` when the boundary falls within a multi-point exit schedule,
+  restoring CEA2 behavior for both IAC and FAC calculations.
+- Equilibrium solves now support gas temperatures through the CEA2
+  high-temperature fit range instead of reporting non-convergence above 6600 K.
+
+### Added
+
 ## [3.3.0] - 2026-07-20
 
 ### Changed
